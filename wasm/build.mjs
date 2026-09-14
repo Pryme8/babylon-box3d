@@ -1,7 +1,7 @@
 // Builds the Box3D WebAssembly module and its JavaScript loaders.
 //
-//   node build.mjs            release build
-//   node build.mjs --debug    assertions and symbols, slower
+//   node wasm/build.mjs            release build
+//   node wasm/build.mjs --debug    assertions and symbols, slower
 //
 // Requirements:
 //   * Emscripten SDK: set EMSDK, or keep a checkout at ../emsdk next to this repository.
@@ -19,7 +19,7 @@ import { cpus } from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 
-const RepoRoot = path.dirname(fileURLToPath(import.meta.url));
+const RepoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const Debug = process.argv.includes("--debug");
 const IsWindows = process.platform === "win32";
 
@@ -75,7 +75,7 @@ const Sources = [
     ...readdirSync(path.join(Box3dDir, "src"))
         .filter((name) => name.endsWith(".c"))
         .map((name) => path.join(Box3dDir, "src", name)),
-    path.join(RepoRoot, "src", "box3d_shim.c"),
+    path.join(RepoRoot, "wasm", "box3d_shim.c"),
 ];
 
 function Run(args) {

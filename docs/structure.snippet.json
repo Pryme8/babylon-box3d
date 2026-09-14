@@ -1,0 +1,8 @@
+{
+    "_comment": "Entry for BabylonJS/Documentation configuration/structure.json, under communityExtensions.children, alphabetically between babylonCMSIntegration and bufferedInterpolation.",
+    "box3dPhysics": {
+        "friendlyName": "Box3D Physics",
+        "children": {},
+        "content": "communityExtensions/box3dPhysics"
+    }
+}

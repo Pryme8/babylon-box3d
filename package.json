@@ -1,35 +1,56 @@
 {
     "name": "babylon-box3d",
     "version": "0.1.0",
-    "description": "Box3D (Erin Catto's 3D physics engine) compiled to WebAssembly for the Babylon.js Box3DPlugin",
+    "description": "Box3D physics for Babylon.js: Erin Catto's 3D rigid body engine compiled to WebAssembly plus a physics v2 plugin (Box3DPlugin)",
     "license": "MIT",
     "author": "Andrew Butt",
     "repository": {
         "type": "git",
         "url": "https://github.com/Pryme8/babylon-box3d"
     },
-    "keywords": ["babylon.js", "box3d", "physics", "wasm"],
+    "keywords": ["babylon.js", "babylonjs", "box3d", "physics", "wasm", "extension"],
     "type": "module",
-    "main": "lib/umd/box3d.umd.js",
-    "module": "lib/esm/box3d.js",
-    "types": "box3d.d.ts",
+    "main": "./dist/index.js",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
     "exports": {
         ".": {
-            "types": "./box3d.d.ts",
-            "import": "./lib/esm/box3d.js",
-            "require": "./lib/umd/box3d.umd.js",
+            "types": "./dist/index.d.ts",
+            "default": "./dist/index.js"
+        },
+        "./wasm": {
+            "types": "./lib/esm/box3d.d.ts",
             "default": "./lib/esm/box3d.js"
         },
-        "./node": {
-            "types": "./box3d.d.ts",
+        "./wasm/node": {
+            "types": "./lib/node/box3d.d.ts",
             "default": "./lib/node/box3d.mjs"
         },
-        "./lib/*": "./lib/*"
+        "./lib/*": "./lib/*",
+        "./umd/*": "./umd/*",
+        "./package.json": "./package.json"
     },
-    "files": ["lib/**/*", "box3d.d.ts", "src/box3d_shim.c", "UPSTREAM_COMMIT", "LICENSE", "LICENSE-box3d.txt", "README.md"],
+    "files": ["dist", "lib", "umd", "wasm/box3d_shim.c", "UPSTREAM_COMMIT", "LICENSE", "LICENSE-box3d.txt", "README.md"],
+    "sideEffects": false,
     "scripts": {
-        "build": "node build.mjs",
-        "test": "node test/smoke.mjs"
+        "build": "npm run build:esm && npm run build:umd",
+        "build:esm": "tsc -p tsconfig.json",
+        "build:umd": "node scripts/build-umd.mjs",
+        "build:wasm": "node wasm/build.mjs",
+        "test": "npm run test:wasm && npm run test:unit",
+        "test:wasm": "node test/wasm.smoke.mjs",
+        "test:unit": "vitest run",
+        "demo": "vite --config demo/vite.config.ts",
+        "prepublishOnly": "npm run build && npm test"
     },
-    "sideEffects": false
+    "peerDependencies": {
+        "@babylonjs/core": ">=8.0.0"
+    },
+    "devDependencies": {
+        "@babylonjs/core": "^8.0.0",
+        "esbuild": "^0.25.0",
+        "typescript": "^5.6.0",
+        "vite": "^6.0.0",
+        "vitest": "^3.0.0"
+    }
 }

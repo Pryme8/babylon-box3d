@@ -1,4 +1,4 @@
-// Node smoke test for the Box3D WASM shim: node packages/public/box3d/smoke.mjs
+// Node smoke test for the Box3D WASM shim: node test/wasm.smoke.mjs
 // Drops a sphere onto a static box, checks it comes to rest, then exercises joints, events and ray casts.
 
 import Box3DModule from "../lib/node/box3d.mjs";
