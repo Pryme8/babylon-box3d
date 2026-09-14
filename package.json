@@ -1,0 +1,35 @@
+{
+    "name": "babylon-box3d",
+    "version": "0.1.0",
+    "description": "Box3D (Erin Catto's 3D physics engine) compiled to WebAssembly for the Babylon.js Box3DPlugin",
+    "license": "MIT",
+    "author": "Andrew Butt",
+    "repository": {
+        "type": "git",
+        "url": "https://github.com/Pryme8/babylon-box3d"
+    },
+    "keywords": ["babylon.js", "box3d", "physics", "wasm"],
+    "type": "module",
+    "main": "lib/umd/box3d.umd.js",
+    "module": "lib/esm/box3d.js",
+    "types": "box3d.d.ts",
+    "exports": {
+        ".": {
+            "types": "./box3d.d.ts",
+            "import": "./lib/esm/box3d.js",
+            "require": "./lib/umd/box3d.umd.js",
+            "default": "./lib/esm/box3d.js"
+        },
+        "./node": {
+            "types": "./box3d.d.ts",
+            "default": "./lib/node/box3d.mjs"
+        },
+        "./lib/*": "./lib/*"
+    },
+    "files": ["lib/**/*", "box3d.d.ts", "src/box3d_shim.c", "UPSTREAM_COMMIT", "LICENSE", "LICENSE-box3d.txt", "README.md"],
+    "scripts": {
+        "build": "node build.mjs",
+        "test": "node test/smoke.mjs"
+    },
+    "sideEffects": false
+}
