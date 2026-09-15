@@ -46,8 +46,8 @@ index) somewhere in the app.
 ### Installing a local build
 
 ```
-npm run build && npm run build:wasm   # dist, umd and lib
-npm pack                              # babylon-box3d-<version>.tgz
+npm run build   # dist and umd; lib (the wasm) is committed, rebuild it only after changing the shim
+npm pack        # babylon-box3d-<version>.tgz
 npm install ../babylon-box3d/babylon-box3d-<version>.tgz   # in the game
 ```
 
