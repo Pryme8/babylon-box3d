@@ -82,6 +82,8 @@ interface IRagdollStats {
     worstLimitJoint: string;
     nan: boolean;
     stepMs: number;
+    /** mean plugin step time over the first 2 s, while every body is awake (Box3D only) */
+    busyStepMs: number;
     lowestBodyY: number;
     perJoint: Map<string, number>;
 }
@@ -200,6 +202,7 @@ async function RunRagdoll(engineName: "box3d" | "havok", subStepCount: number, m
             worstLimitJoint: "",
             nan: false,
             stepMs: 0,
+            busyStepMs: 0,
             lowestBodyY: Infinity,
             perJoint: new Map(),
         };
@@ -207,8 +210,15 @@ async function RunRagdoll(engineName: "box3d" | "havok", subStepCount: number, m
         if (!measure) {
             // a bare run, so the reported cost per step is the physics and not the checks below
             const bare = performance.now();
-            step(steps);
+            let busyMs = 0;
+            // the first 2 s, while every body is still awake, is what the solver cost actually looks like
+            step(steps, (index) => {
+                if (index < 120) {
+                    busyMs += (world as any).plugin?.lastStepTimeMs ?? 0;
+                }
+            });
             stats.stepMs = (performance.now() - bare) / steps;
+            stats.busyStepMs = busyMs / 120;
             return stats;
         }
         const started = performance.now();
@@ -278,7 +288,9 @@ describe("Zombie ragdoll (real wasm)", () => {
         const runs: IRagdollStats[] = [];
         for (const [engineName, subStepCount] of matrix) {
             const stats = await RunRagdoll(engineName, subStepCount);
-            stats.stepMs = (await RunRagdoll(engineName, subStepCount, false)).stepMs;
+            const timed = await RunRagdoll(engineName, subStepCount, false);
+            stats.stepMs = timed.stepMs;
+            stats.busyStepMs = timed.busyStepMs;
             runs.push(stats);
         }
         for (const stats of runs) {
@@ -288,7 +300,7 @@ describe("Zombie ragdoll (real wasm)", () => {
                     `asleep ${stats.engine === "box3d" ? stats.asleep : "n/a"}, ` +
                     `limit excess ${stats.worstLimitExcessDeg.toFixed(2)} deg after 0.1 s (${stats.worstLimitJoint || "none"}), ` +
                     `${stats.firstStepsLimitExcessDeg.toFixed(1)} deg while absorbing the impulse, lowest body y ${stats.lowestBodyY.toFixed(3)}, ` +
-                    `${stats.stepMs.toFixed(3)} ms/step\n  worst per joint: ` +
+                    `${stats.stepMs.toFixed(3)} ms/step over 10 s, ${stats.busyStepMs > 0 ? `${stats.busyStepMs.toFixed(3)} ms/step while awake` : "no plugin timing"}\n  worst per joint: ` +
                     [...stats.perJoint.entries()]
                         .sort((a, b) => b[1] - a[1])
                         .slice(0, 4)
