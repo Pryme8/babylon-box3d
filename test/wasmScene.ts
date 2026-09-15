@@ -13,6 +13,10 @@ import { Logger } from "@babylonjs/core/Misc/logger";
 // component), so import both.
 import "@babylonjs/core/Physics/joinedPhysicsEngineComponent";
 import "@babylonjs/core/Physics/v2/physicsEngineComponent";
+// Mesh.prototype.thinInstanceBufferUpdated, which the plugin calls after it moves instances, comes from this side
+// effect module. An app with thin instances always has it, since that module is the only way to make them, but a test
+// that fills the storage in by hand does not, and on 8.x nothing else in the import chain pulls it in.
+import "@babylonjs/core/Meshes/thinInstanceMesh";
 import Box3D from "../lib/node/box3d.mjs";
 import { Box3DPlugin } from "../src/box3dPlugin";
 
