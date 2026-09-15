@@ -59,6 +59,7 @@ function createModule() {
         _bx_DestroyBody: vi.fn(),
         _bx_Body_SetShape: vi.fn(),
         _bx_Body_EnableContactEvents: vi.fn(),
+        _bx_Body_SetEventFlags: vi.fn(),
         _bx_Body_ApplyMassFromShapes: vi.fn(),
         _bx_Body_GetMassData: vi.fn((slot: number) => {
             scratch.set(massData.get(slot) ?? [10, 0, 0, 0, 2, 2, 2]);
@@ -199,7 +200,8 @@ describe("Box3DPlugin stepping and events", () => {
         const a = createBody(plugin);
         const b = createBody(plugin);
         plugin.setCollisionCallbackEnabled(a, true);
-        expect(mod.b3._bx_Body_EnableContactEvents).toHaveBeenLastCalledWith(a._pluginData.slot, 1);
+        // collision callbacks ask for started, continued and finished: touch events and hit events
+        expect(mod.b3._bx_Body_SetEventFlags).toHaveBeenLastCalledWith(a._pluginData.slot, 1, 1);
 
         const sa = a._pluginData.slot;
         const sb = b._pluginData.slot;

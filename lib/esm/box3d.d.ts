@@ -99,6 +99,11 @@ export interface Box3DExports {
     _bx_Body_SetMassData(body: number, mass: number, cx: number, cy: number, cz: number, ixx: number, iyy: number, izz: number): void;
     _bx_Body_ApplyMassFromShapes(body: number): void;
     _bx_Body_GetShapeCount(body: number): number;
+    /** Begin/end touch events and hit events on the body's shapes, enabled separately. */
+    _bx_Body_SetEventFlags(body: number, contactEvents: number, hitEvents: number): void;
+    /** Bit 1: begin/end touch events, bit 2: hit events. */
+    _bx_Body_GetEventFlags(body: number): number;
+    /** Enables both begin/end touch and hit events. */
     _bx_Body_EnableContactEvents(body: number, flag: number): void;
     /** Replaces every shape on the body with an instance of the description (0 removes all shapes). */
     _bx_Body_SetShape(body: number, desc: number): void;

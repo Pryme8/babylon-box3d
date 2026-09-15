@@ -92,7 +92,9 @@ typedef struct bxBody
 	b3BodyId id;
 	int world;
 	int alive;
+	// begin/end touch events and hit events on this body's shapes (Babylon's COLLISION_STARTED/FINISHED and CONTINUED)
 	int contactEvents;
+	int hitEvents;
 	int shapeDesc;
 	b3ShapeId* shapes;
 	int* shapeDescs;
@@ -559,7 +561,46 @@ BX_EXPORT int bx_World_GetMoveEvents( int w )
 	return count;
 }
 
-/// Each record: [kind (0 begin, 1 end, 2 hit), shapeDescA, shapeDescB, bodyA, bodyB, px, py, pz, nx, ny, nz, approachSpeed]
+/// Writes the contact point, normal (from shape A to shape B) and the total normal impulse of a begin touch event,
+/// taken from the contact's first manifold. Havok reports these on collision started events too.
+static void bxWriteBeginTouchData( float* out, b3ContactId contactId, b3ShapeId shapeIdA )
+{
+	memset( out, 0, 7 * sizeof( float ) );
+	if ( b3Contact_IsValid( contactId ) == false )
+	{
+		return;
+	}
+	b3ContactData data = b3Contact_GetData( contactId );
+	if ( data.manifoldCount <= 0 || data.manifolds[0].pointCount <= 0 )
+	{
+		return;
+	}
+	const b3Manifold* manifold = data.manifolds + 0;
+	// manifold anchors are relative to the center of mass of the contact's body A, which may be the event's shape B
+	int flipped = B3_ID_EQUALS( data.shapeIdA, shapeIdA ) == false;
+	b3Pos center = b3Body_GetWorldCenter( b3Shape_GetBody( data.shapeIdA ) );
+	b3Vec3 anchor = b3Vec3_zero;
+	float impulse = 0.0f;
+	for ( int i = 0; i < manifold->pointCount; ++i )
+	{
+		anchor = b3Add( anchor, manifold->points[i].anchorA );
+		impulse += manifold->points[i].totalNormalImpulse;
+	}
+	anchor = b3MulSV( 1.0f / (float)manifold->pointCount, anchor );
+	b3Pos point = b3OffsetPos( center, anchor );
+	b3Vec3 normal = flipped ? b3Neg( manifold->normal ) : manifold->normal;
+	out[0] = point.x;
+	out[1] = point.y;
+	out[2] = point.z;
+	out[3] = normal.x;
+	out[4] = normal.y;
+	out[5] = normal.z;
+	out[6] = impulse;
+}
+
+/// Each record: [kind (0 begin, 1 end, 2 hit), shapeDescA, shapeDescB, bodyA, bodyB, px, py, pz, nx, ny, nz, value]
+/// Begin events carry the contact point, normal and the total normal impulse of the step, hit events the point, normal
+/// and approach speed, end events nothing.
 BX_EXPORT int bx_World_GetContactEvents( int w )
 {
 	b3WorldId worldId = bxGetWorld( w );
@@ -588,7 +629,7 @@ BX_EXPORT int bx_World_GetContactEvents( int w )
 		out[2] = (float)bxDescSlotFromShape( e->shapeIdB );
 		out[3] = (float)bodyA;
 		out[4] = (float)bodyB;
-		memset( out + 5, 0, 7 * sizeof( float ) );
+		bxWriteBeginTouchData( out + 5, e->contactId, e->shapeIdA );
 		out += BX_CONTACT_EVENT_STRIDE;
 		count += 1;
 	}
@@ -1011,18 +1052,32 @@ BX_EXPORT int bx_Body_GetShapeCount( int slot )
 	return body->shapeCount;
 }
 
-BX_EXPORT void bx_Body_EnableContactEvents( int slot, int flag )
+/// Begin/end touch events and hit events are enabled separately so a body only pays for the events it asked for.
+BX_EXPORT void bx_Body_SetEventFlags( int slot, int contactEvents, int hitEvents )
 {
 	BX_BODY( slot );
-	body->contactEvents = flag != 0;
+	body->contactEvents = contactEvents != 0;
+	body->hitEvents = hitEvents != 0;
 	for ( int i = 0; i < body->shapeCount; ++i )
 	{
 		if ( b3Shape_IsValid( body->shapes[i] ) )
 		{
-			b3Shape_EnableContactEvents( body->shapes[i], flag != 0 );
-			b3Shape_EnableHitEvents( body->shapes[i], flag != 0 );
+			b3Shape_EnableContactEvents( body->shapes[i], body->contactEvents != 0 );
+			b3Shape_EnableHitEvents( body->shapes[i], body->hitEvents != 0 );
 		}
 	}
+}
+
+/// Bit 1: begin/end touch events, bit 2: hit events.
+BX_EXPORT int bx_Body_GetEventFlags( int slot )
+{
+	BX_BODY_RET( slot, 0 );
+	return ( body->contactEvents ? 1 : 0 ) | ( body->hitEvents ? 2 : 0 );
+}
+
+BX_EXPORT void bx_Body_EnableContactEvents( int slot, int flag )
+{
+	bx_Body_SetEventFlags( slot, flag, flag );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1525,8 +1580,9 @@ static void bxInstantiate( bxBody* body, int descSlot, b3Transform xf, b3Vec3 sc
 	// Visitors must opt in to be seen by sensors. Babylon triggers see everything.
 	def.enableSensorEvents = true;
 	def.enableContactEvents = body->contactEvents != 0;
-	def.enableHitEvents = body->contactEvents != 0;
-	def.updateBodyMass = true;
+	def.enableHitEvents = body->hitEvents != 0;
+	// the caller applies the mass once after instantiating every shape of the description
+	def.updateBodyMass = false;
 
 	switch ( desc->kind )
 	{

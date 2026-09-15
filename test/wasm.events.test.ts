@@ -39,6 +39,86 @@ function GrowMemoryWithBodies(w: IWasmScene): number {
 }
 
 describe("Box3D events (real wasm)", () => {
+    it("enables only the Box3D event types the mask asks for", async () => {
+        world = await CreateWasmScene();
+        const w = world;
+        const body = CreateSphere(w, "ball", new Vector3(0, 5, 0));
+        const slot = (body as any)._pluginData.slot;
+        // bit 1 of the shim flags is begin/end touch, bit 2 is hit events
+        expect(w.b3._bx_Body_GetEventFlags(slot)).toBe(0);
+        body.setEventMask(1 /* COLLISION_STARTED */);
+        expect(w.b3._bx_Body_GetEventFlags(slot)).toBe(1);
+        body.setEventMask(2 /* COLLISION_CONTINUED */);
+        expect(w.b3._bx_Body_GetEventFlags(slot)).toBe(2);
+        body.setEventMask(4 /* COLLISION_FINISHED */);
+        expect(w.b3._bx_Body_GetEventFlags(slot)).toBe(1);
+        body.setCollisionCallbackEnabled(true);
+        expect(body.getEventMask()).toBe(7);
+        expect(w.b3._bx_Body_GetEventFlags(slot)).toBe(3);
+        body.setCollisionCallbackEnabled(false);
+        expect(w.b3._bx_Body_GetEventFlags(slot)).toBe(0);
+        body.setCollisionEndedCallbackEnabled(true);
+        expect(body.getEventMask()).toBe(4);
+        expect(w.b3._bx_Body_GetEventFlags(slot)).toBe(1);
+        // the flags survive a new shape on the body
+        body.shape = new PhysicsShapeBox(Vector3.Zero(), Quaternion.Identity(), new Vector3(1, 1, 1), w.scene);
+        expect(w.b3._bx_Body_GetEventFlags(slot)).toBe(1);
+    });
+
+    it("reports only the event types a body asked for, and nothing once a stack is asleep", async () => {
+        world = await CreateWasmScene();
+        const w = world;
+        CreateBoxBody(w.scene, "ground", new Vector3(0, -0.5, 0), new Vector3(40, 1, 40), PhysicsMotionType.STATIC);
+        const started = CreateSphere(w, "started", new Vector3(-2, 1, 0));
+        const continued = CreateSphere(w, "continued", new Vector3(2, 1, 0));
+        started.setEventMask(1);
+        continued.setEventMask(2);
+        const byBody = new Map<PhysicsBody, PhysicsEventType[]>([
+            [started, []],
+            [continued, []],
+        ]);
+        const record = (event: IBasePhysicsCollisionEvent) => {
+            for (const body of [event.collider, event.collidedAgainst]) {
+                byBody.get(body)?.push(event.type);
+            }
+        };
+        w.plugin.onCollisionObservable.add(record);
+        w.plugin.onCollisionEndedObservable.add(record);
+        w.step(120);
+        expect(new Set(byBody.get(started))).toEqual(new Set([PhysicsEventType.COLLISION_STARTED]));
+        expect(new Set(byBody.get(continued))).toEqual(new Set([PhysicsEventType.COLLISION_CONTINUED]));
+
+        // idle bodies with all callbacks on must not keep producing events
+        for (const body of [started, continued]) {
+            body.setCollisionCallbackEnabled(true);
+        }
+        w.step(180);
+        let events = 0;
+        w.plugin.onCollisionObservable.add(() => events++);
+        w.plugin.onCollisionEndedObservable.add(() => events++);
+        w.step(120);
+        expect(events).toBe(0);
+    });
+
+    it("reports a contact point, normal and impulse on collision started, like Havok", async () => {
+        world = await CreateWasmScene();
+        const w = world;
+        CreateBoxBody(w.scene, "ground", new Vector3(0, -0.5, 0), new Vector3(40, 1, 40), PhysicsMotionType.STATIC);
+        const ball = CreateSphere(w, "ball", new Vector3(0, 2, 0), 0.5);
+        ball.setCollisionCallbackEnabled(true);
+        let start: IPhysicsCollisionEvent | undefined;
+        w.plugin.onCollisionObservable.add((event) => {
+            start ??= event.type === PhysicsEventType.COLLISION_STARTED ? { ...event, point: event.point!.clone(), normal: event.normal!.clone() } : undefined;
+        });
+        w.step(90);
+        expect(start).toBeDefined();
+        expect(start!.point!.y).toBeLessThan(0.1);
+        expect(Math.abs(start!.point!.x)).toBeLessThan(0.2);
+        // the normal points from the ground (shape A) to the ball, or the other way round for the flipped pair
+        expect(Math.abs(start!.normal!.y)).toBeGreaterThan(0.99);
+        expect(start!.impulse).toBeGreaterThan(0);
+    });
+
     it("delivers every collision event when an observer grows the wasm memory during dispatch", async () => {
         world = await CreateWasmScene();
         const w = world;

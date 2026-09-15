@@ -39,8 +39,8 @@ class Box3DBodyData {
         public slot: number
     ) {}
     public userMassProps: PhysicsMassProperties = {};
+    /** Havok's EventType bits: 1 collision started, 2 collision continued, 4 collision finished */
     public eventMask = 0;
-    public collisionEnded = false;
     public motionType = PhysicsMotionType.STATIC;
 }
 
@@ -222,6 +222,17 @@ export class Box3DWheelJoint {
         this._plugin._destroyExtraJoint(this._slot);
         this._slot = 0;
     }
+}
+
+/**
+ * Body event mask bits, the same values Havok's plugin uses so masks can be copied over from Havok code.
+ * Box3D reports begin and end touch events together (they are one shape flag) and hit events separately.
+ */
+const enum Box3DEventBits {
+    COLLISION_STARTED = 1,
+    COLLISION_CONTINUED = 2,
+    COLLISION_FINISHED = 4,
+    ALL = 7,
 }
 
 const MOVE_STRIDE = 9;
@@ -771,7 +782,7 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         if (shape) {
             shape.users.add(data);
         }
-        this._b3._bx_Body_EnableContactEvents(data.slot, data.eventMask ? 1 : 0);
+        this._applyEventFlags(data);
         this._internalUpdateMassProperties(data);
     }
 
@@ -788,12 +799,19 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         return shape.type ?? (shape._pluginData as Box3DShapeData)?.type ?? PhysicsShapeType.CONTAINER;
     }
 
+    /** Turns the body's event mask into Box3D's two shape flags, so a body only pays for the events it asked for. */
+    private _applyEventFlags(data: Box3DBodyData): void {
+        const touch = data.eventMask & (Box3DEventBits.COLLISION_STARTED | Box3DEventBits.COLLISION_FINISHED) ? 1 : 0;
+        const hit = data.eventMask & Box3DEventBits.COLLISION_CONTINUED ? 1 : 0;
+        this._b3._bx_Body_SetEventFlags(data.slot, touch, hit);
+    }
+
     public setEventMask(body: PhysicsBody, eventMask: number, instanceIndex?: number): void {
         this._applyToBodyOrInstances(
             body,
             (data) => {
                 data.eventMask = eventMask;
-                this._b3._bx_Body_EnableContactEvents(data.slot, eventMask ? 1 : 0);
+                this._applyEventFlags(data);
             },
             instanceIndex
         );
@@ -965,18 +983,16 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
     }
 
     public setCollisionCallbackEnabled(body: PhysicsBody, enabled: boolean, instanceIndex?: number): void {
-        this.setEventMask(body, enabled ? 1 : 0, instanceIndex);
+        // Havok replaces the mask with all three collision events, or clears it
+        this.setEventMask(body, enabled ? Box3DEventBits.ALL : 0, instanceIndex);
     }
 
     public setCollisionEndedCallbackEnabled(body: PhysicsBody, enabled: boolean, instanceIndex?: number): void {
         this._applyToBodyOrInstances(
             body,
             (data) => {
-                data.collisionEnded = enabled;
-                if (enabled && !data.eventMask) {
-                    data.eventMask = 1;
-                    this._b3._bx_Body_EnableContactEvents(data.slot, 1);
-                }
+                data.eventMask = enabled ? data.eventMask | Box3DEventBits.COLLISION_FINISHED : data.eventMask & ~Box3DEventBits.COLLISION_FINISHED;
+                this._applyEventFlags(data);
             },
             instanceIndex
         );
@@ -1182,7 +1198,7 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         visited.add(data);
         for (const body of data.users) {
             this._b3._bx_Body_SetShape(body.slot, data.slot);
-            this._b3._bx_Body_EnableContactEvents(body.slot, body.eventMask ? 1 : 0);
+            this._applyEventFlags(body);
             this._internalUpdateMassProperties(body);
         }
         for (const parent of data.parents) {
@@ -2278,15 +2294,12 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
             if (!refA || !refB || !refA.data.slot || !refB.data.slot) {
                 continue;
             }
-            const aWants = refA.data.eventMask !== 0;
-            const bWants = refB.data.eventMask !== 0;
-            if (!aWants && !bWants) {
+            // like Havok, an event is reported when either body asked for that event type
+            const bit = kind === 0 ? Box3DEventBits.COLLISION_STARTED : kind === 1 ? Box3DEventBits.COLLISION_FINISHED : Box3DEventBits.COLLISION_CONTINUED;
+            if (((refA.data.eventMask | refB.data.eventMask) & bit) === 0) {
                 continue;
             }
             if (kind === 1) {
-                if (!refA.data.collisionEnded && !refB.data.collisionEnded && !this.onCollisionEndedObservable.hasObservers()) {
-                    continue;
-                }
                 const ended: IBasePhysicsCollisionEvent = {
                     collider: refA.body,
                     colliderIndex: refA.index,
@@ -2302,10 +2315,10 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
                 }
                 continue;
             }
-            const hasPoint = kind === 2;
+            // begin events carry the manifold point, normal and normal impulse, hit events the approach speed
             const type = kind === 0 ? PhysicsEventType.COLLISION_STARTED : PhysicsEventType.COLLISION_CONTINUED;
-            const point = hasPoint ? new Vector3(buffer[o + 5], buffer[o + 6], buffer[o + 7]) : null;
-            const normal = hasPoint ? new Vector3(buffer[o + 8], buffer[o + 9], buffer[o + 10]) : null;
+            const point = new Vector3(buffer[o + 5], buffer[o + 6], buffer[o + 7]);
+            const normal = new Vector3(buffer[o + 8], buffer[o + 9], buffer[o + 10]);
             const info: IPhysicsCollisionEvent = {
                 collider: refA.body,
                 colliderIndex: refA.index,
@@ -2315,7 +2328,7 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
                 point,
                 normal,
                 distance: 0,
-                impulse: hasPoint ? buffer[o + 11] : 0,
+                impulse: buffer[o + 11],
             };
             this.onCollisionObservable.notifyObservers(info);
             if (this._bodyCollisionObservable.size) {

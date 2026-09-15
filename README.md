@@ -44,10 +44,14 @@ The wasm is fetched next to the loader script. With a bundler pass `locateFile`,
 | `DISTANCE` | distance joint with a fixed length of `maxDistance` |
 | `SIX_DOF` (`Physics6DoFConstraint`) | one Box3D joint chosen from the limits with Havok's axis rules, see below |
 | `SpringConstraint` | distance joint spring (`stiffness` in N/m like Havok) |
-| `COLLISION_STARTED` / `FINISHED` | contact begin / end touch events |
+| `COLLISION_STARTED` / `FINISHED` | contact begin / end touch events (started carries the manifold point, normal and normal impulse) |
 | `COLLISION_CONTINUED` | contact hit events (point, normal, approach speed as `impulse`) |
 | `TRIGGER_ENTERED` / `EXITED` | sensor events |
 | thin instances | one Box3D body per instance |
+
+Event masks use Havok's bits (1 started, 2 continued, 4 finished) and only enable what they ask for: started and
+finished map to Box3D's begin/end touch events, continued to its hit events, so bodies that only want one kind (every
+body of a Babylon `Ragdoll`, for instance) do not pay for the others.
 
 `SIX_DOF` limits follow Havok: an axis that is not listed is free, `minLimit === maxLimit === 0` locks it, anything
 else limits it (one sided ranges such as 0..140 degrees work). The frame is `[axis, perpAxis, axis x perpAxis]` on each
