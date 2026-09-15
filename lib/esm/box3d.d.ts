@@ -107,6 +107,10 @@ export interface Box3DExports {
     _bx_Body_EnableContactEvents(body: number, flag: number): void;
     /** Replaces every shape on the body with an instance of the description (0 removes all shapes). */
     _bx_Body_SetShape(body: number, desc: number): void;
+    /** Applies changed description properties (1 filter, 2 material, 4 density) to live shapes without rebuilding them. */
+    _bx_Body_SyncShapeDesc(body: number, desc: number, what: number): void;
+    /** Total number of box3d shapes the shim has created, to tell a rebuild from an in place update. */
+    _bx_GetShapeBuildCount(): number;
     _bx_Body_GetShapeDesc(body: number): number;
 
     // shape descriptions

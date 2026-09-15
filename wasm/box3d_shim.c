@@ -1536,12 +1536,22 @@ static void bxDescRelease( int slot )
 // Shape instantiation on bodies
 // ---------------------------------------------------------------------------------------------
 
+// Counts every box3d shape the shim has created. Rebuilding a shape description on its bodies is the expensive path,
+// so this makes it observable (bx_GetShapeBuildCount).
+static int s_shapeBuildCount;
+
+BX_EXPORT int bx_GetShapeBuildCount( void )
+{
+	return s_shapeBuildCount;
+}
+
 static void bxBodyPushShape( bxBody* body, b3ShapeId shapeId, int descSlot )
 {
 	if ( B3_IS_NULL( shapeId ) )
 	{
 		return;
 	}
+	s_shapeBuildCount += 1;
 	if ( body->shapeCount >= body->shapeCapacity )
 	{
 		int capacity = body->shapeCapacity == 0 ? 4 : body->shapeCapacity * 2;
@@ -1687,6 +1697,61 @@ BX_EXPORT void bx_Body_SetShape( int slot, int descSlot )
 		bxInstantiate( body, descSlot, b3Transform_identity, b3Vec3_one, 0 );
 	}
 	b3Body_ApplyMassFromShapes( body->id );
+}
+
+/// Properties that can be changed on live shapes, see bx_Body_SyncShapeDesc.
+typedef enum bxSyncFlags
+{
+	bx_syncFilter = 1,
+	bx_syncMaterial = 2,
+	bx_syncDensity = 4,
+} bxSyncFlags;
+
+/// Applies changed description properties to the shapes this body already has, instead of rebuilding them. Rebuilding
+/// loses contacts and re-applies the mass, and Babylon games change filters on live jointed bodies often.
+BX_EXPORT void bx_Body_SyncShapeDesc( int slot, int descSlot, int what )
+{
+	BX_BODY( slot );
+	bxShapeDesc* desc = bxGetDesc( descSlot );
+	if ( desc == NULL )
+	{
+		return;
+	}
+	int massChanged = 0;
+	for ( int i = 0; i < body->shapeCount; ++i )
+	{
+		if ( body->shapeDescs[i] != descSlot || b3Shape_IsValid( body->shapes[i] ) == false )
+		{
+			continue;
+		}
+		b3ShapeId shapeId = body->shapes[i];
+		if ( what & bx_syncFilter )
+		{
+			b3Filter filter = b3Shape_GetFilter( shapeId );
+			filter.categoryBits = desc->categoryBits;
+			filter.maskBits = desc->maskBits;
+			filter.groupIndex = desc->groupIndex;
+			// true: contacts that the new filter forbids are dropped and new pairs are found on the next step
+			b3Shape_SetFilter( shapeId, filter, true );
+		}
+		if ( what & bx_syncMaterial )
+		{
+			b3SurfaceMaterial material = b3Shape_GetSurfaceMaterial( shapeId );
+			material.friction = desc->friction;
+			material.restitution = desc->restitution;
+			material.rollingResistance = desc->rollingResistance;
+			b3Shape_SetSurfaceMaterial( shapeId, material );
+		}
+		if ( what & bx_syncDensity )
+		{
+			b3Shape_SetDensity( shapeId, desc->density, false );
+			massChanged = 1;
+		}
+	}
+	if ( massChanged )
+	{
+		b3Body_ApplyMassFromShapes( body->id );
+	}
 }
 
 BX_EXPORT int bx_Body_GetShapeDesc( int slot )

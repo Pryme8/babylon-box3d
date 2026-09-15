@@ -235,6 +235,13 @@ const enum Box3DEventBits {
     ALL = 7,
 }
 
+/** Shape description properties that Box3D can change on live shapes, see bx_Body_SyncShapeDesc. */
+const enum Box3DShapeSync {
+    FILTER = 1,
+    MATERIAL = 2,
+    DENSITY = 4,
+}
+
 const MOVE_STRIDE = 9;
 const CONTACT_STRIDE = 12;
 const SENSOR_STRIDE = 5;
@@ -1190,7 +1197,8 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         }
     }
 
-    // Re-instantiates the shape on every body that uses it (or uses a container holding it).
+    // Re-instantiates the shape on every body that uses it (or uses a container holding it). Only needed for geometry
+    // and child changes; filters, materials and density are applied in place, see _syncShapeUsers.
     private _refreshShapeUsers(data: Box3DShapeData, visited = new Set<Box3DShapeData>()): void {
         if (visited.has(data)) {
             return;
@@ -1206,11 +1214,31 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         }
     }
 
+    /**
+     * Pushes changed description properties into the Box3D shapes that are already on the bodies using this shape,
+     * directly or through a container. Rebuilding them instead would drop their contacts and re-apply the body mass.
+     */
+    private _syncShapeUsers(data: Box3DShapeData, what: Box3DShapeSync, visited = new Set<Box3DShapeData>(), changed = data): void {
+        if (visited.has(data)) {
+            return;
+        }
+        visited.add(data);
+        for (const body of data.users) {
+            this._b3._bx_Body_SyncShapeDesc(body.slot, changed.slot, what);
+            if (what & Box3DShapeSync.DENSITY) {
+                this._internalUpdateMassProperties(body);
+            }
+        }
+        for (const parent of data.parents) {
+            this._syncShapeUsers(parent, what, visited, changed);
+        }
+    }
+
     public setShapeFilterMembershipMask(shape: PhysicsShape, membershipMask: number): void {
         const data = shape._pluginData as Box3DShapeData;
         const collide = this._b3._bx_ShapeDesc_GetMaskBits(data.slot);
         this._b3._bx_ShapeDesc_SetFilter(data.slot, membershipMask >>> 0, collide >>> 0);
-        this._refreshShapeUsers(data);
+        this._syncShapeUsers(data, Box3DShapeSync.FILTER);
     }
 
     public getShapeFilterMembershipMask(shape: PhysicsShape): number {
@@ -1221,7 +1249,7 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         const data = shape._pluginData as Box3DShapeData;
         const membership = this._b3._bx_ShapeDesc_GetCategoryBits(data.slot);
         this._b3._bx_ShapeDesc_SetFilter(data.slot, membership >>> 0, collideMask >>> 0);
-        this._refreshShapeUsers(data);
+        this._syncShapeUsers(data, Box3DShapeSync.FILTER);
     }
 
     public getShapeFilterCollideMask(shape: PhysicsShape): number {
@@ -1232,7 +1260,7 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         const data = shape._pluginData as Box3DShapeData;
         data.material = material;
         this._b3._bx_ShapeDesc_SetMaterial(data.slot, material.friction ?? 0.5, material.restitution ?? 0);
-        this._refreshShapeUsers(data);
+        this._syncShapeUsers(data, Box3DShapeSync.MATERIAL);
     }
 
     public getMaterial(shape: PhysicsShape): PhysicsMaterial {
@@ -1249,7 +1277,7 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
     public setDensity(shape: PhysicsShape, density: number): void {
         const data = shape._pluginData as Box3DShapeData;
         this._b3._bx_ShapeDesc_SetDensity(data.slot, density);
-        this._refreshShapeUsers(data);
+        this._syncShapeUsers(data, Box3DShapeSync.DENSITY);
     }
 
     public getDensity(shape: PhysicsShape): number {
@@ -1322,6 +1350,7 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
     public setTrigger(shape: PhysicsShape, isTrigger: boolean): void {
         const data = shape._pluginData as Box3DShapeData;
         this._b3._bx_ShapeDesc_SetSensor(data.slot, isTrigger ? 1 : 0);
+        // Box3D decides at creation whether a shape is a sensor, so this one does need a rebuild
         this._refreshShapeUsers(data);
     }
 
@@ -2076,7 +2105,7 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
     public setShapeFilterGroup(shape: PhysicsShape, groupIndex: number): void {
         const data = shape._pluginData as Box3DShapeData;
         this._b3._bx_ShapeDesc_SetGroup(data.slot, groupIndex | 0);
-        this._refreshShapeUsers(data);
+        this._syncShapeUsers(data, Box3DShapeSync.FILTER);
     }
 
     /**
@@ -2087,7 +2116,7 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
     public setShapeRollingResistance(shape: PhysicsShape, value: number): void {
         const data = shape._pluginData as Box3DShapeData;
         this._b3._bx_ShapeDesc_SetRollingResistance(data.slot, value);
-        this._refreshShapeUsers(data);
+        this._syncShapeUsers(data, Box3DShapeSync.MATERIAL);
     }
 
     /**

@@ -78,7 +78,8 @@ Box3D extras on the plugin: `explode`, `createWheelJoint` (suspension, steering,
 is not supported yet, it depends on Havok internals.
 
 Box3D creates shapes on bodies while Babylon creates shapes standalone, so a `PhysicsShape` is a description that
-is instantiated on every body it is set on. Hull data is copied into Box3D's world database, mesh and height field
+is instantiated on every body it is set on. Changing its filter masks, material or density is applied to the live
+Box3D shapes in place; only geometry, children and the trigger flag rebuild them. Hull data is copied into Box3D's world database, mesh and height field
 data are shared and reference counted. Only bodies reported by Box3D's move events are synced each step. Box3D is
 right handed and Babylon left handed by default; no conversion is done, the simulation runs in the mirrored frame
 and mesh winding is flipped, exactly like the Havok plugin.
