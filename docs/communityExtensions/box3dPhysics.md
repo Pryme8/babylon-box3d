@@ -21,11 +21,14 @@ video-content:
 - Static, animated and dynamic bodies, thin instances, pre step teleport and action modes
 - Sphere, capsule, cylinder, box, convex hull, mesh, height field and container shapes
 - Ball and socket, hinge, prismatic, slider, lock and distance constraints with limits, velocity and position motors
-- Collision started, continued and finished events, trigger events, per body observables
+- `Physics6DoFConstraint` and `SpringConstraint`: the limits are mapped onto the closest Box3D joint with Havok's axis
+  rules, so ragdolls with twist, cone and one sided hinge limits behave the same
+- Mass properties with Havok's semantics, including inertia per unit mass and locked rotation axes
+- Collision started, continued and finished events, trigger events, per body observables, Havok's event mask bits
 - Ray casts with membership and collide masks
 - Box3D extras: explosions, wheel joints with suspension and steering, parallel joints, collision groups, rolling resistance
 
-Not supported yet: `Physics6DoFConstraint`, `SpringConstraint` and `PhysicsCharacterController`, which currently depends on Havok internals.
+Not supported yet: `PhysicsCharacterController`, which currently depends on Havok internals.
 
 ## Usage
 

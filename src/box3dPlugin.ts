@@ -1,4 +1,4 @@
-import { Matrix, Quaternion, TmpVectors, Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Matrix, Quaternion, TmpVectors, Vector3 } from "@babylonjs/core/Maths/math.vector.js";
 import {
     type IPhysicsEnginePluginV2,
     type PhysicsMassProperties,
@@ -15,21 +15,21 @@ import {
     PhysicsEventType,
     PhysicsPrestepType,
     PhysicsActivationControl,
-} from "@babylonjs/core/Physics/v2/IPhysicsEnginePlugin";
-import { PhysicsRaycastResult } from "@babylonjs/core/Physics/physicsRaycastResult";
-import { type IRaycastQuery } from "@babylonjs/core/Physics/physicsRaycastResult";
-import { Logger } from "@babylonjs/core/Misc/logger";
-import { type PhysicsBody } from "@babylonjs/core/Physics/v2/physicsBody";
-import { type PhysicsConstraint, type Physics6DoFConstraint, type Physics6DoFLimit } from "@babylonjs/core/Physics/v2/physicsConstraint";
-import { type PhysicsMaterial } from "@babylonjs/core/Physics/v2/physicsMaterial";
-import { type PhysicsShape } from "@babylonjs/core/Physics/v2/physicsShape";
-import { BoundingBox } from "@babylonjs/core/Culling/boundingBox";
-import { type TransformNode } from "@babylonjs/core/Meshes/transformNode";
-import { Mesh } from "@babylonjs/core/Meshes/mesh";
-import { InstancedMesh } from "@babylonjs/core/Meshes/instancedMesh";
-import { VertexBuffer } from "@babylonjs/core/Buffers/buffer";
-import { Observable } from "@babylonjs/core/Misc/observable";
-import { type Nullable, type FloatArray } from "@babylonjs/core/types";
+} from "@babylonjs/core/Physics/v2/IPhysicsEnginePlugin.js";
+import { PhysicsRaycastResult } from "@babylonjs/core/Physics/physicsRaycastResult.js";
+import { type IRaycastQuery } from "@babylonjs/core/Physics/physicsRaycastResult.js";
+import { Logger } from "@babylonjs/core/Misc/logger.js";
+import { type PhysicsBody } from "@babylonjs/core/Physics/v2/physicsBody.js";
+import { type PhysicsConstraint, type Physics6DoFConstraint, type Physics6DoFLimit } from "@babylonjs/core/Physics/v2/physicsConstraint.js";
+import { type PhysicsMaterial } from "@babylonjs/core/Physics/v2/physicsMaterial.js";
+import { type PhysicsShape } from "@babylonjs/core/Physics/v2/physicsShape.js";
+import { BoundingBox } from "@babylonjs/core/Culling/boundingBox.js";
+import { type TransformNode } from "@babylonjs/core/Meshes/transformNode.js";
+import { Mesh } from "@babylonjs/core/Meshes/mesh.js";
+import { InstancedMesh } from "@babylonjs/core/Meshes/instancedMesh.js";
+import { VertexBuffer } from "@babylonjs/core/Buffers/buffer.js";
+import { Observable } from "@babylonjs/core/Misc/observable.js";
+import { type Nullable, type FloatArray } from "@babylonjs/core/types.js";
 
 /**
  * Per body plugin data. One instance per Box3D body (thin instances get one each).
