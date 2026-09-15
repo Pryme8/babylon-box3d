@@ -61,10 +61,10 @@
         "prepublishOnly": "npm run build && npm test"
     },
     "peerDependencies": {
-        "@babylonjs/core": ">=8.0.0"
+        "@babylonjs/core": "^8.0.0 || ^9.0.0"
     },
     "devDependencies": {
-        "@babylonjs/core": "^8.0.0",
+        "@babylonjs/core": "^9.26.1",
         "@babylonjs/havok": "^1.3.14",
         "esbuild": "^0.25.0",
         "oimo": "^1.0.9",

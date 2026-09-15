@@ -9,6 +9,9 @@ import { PhysicsBody } from "@babylonjs/core/Physics/v2/physicsBody";
 import { PhysicsShapeBox } from "@babylonjs/core/Physics/v2/physicsShape";
 import { PhysicsMotionType } from "@babylonjs/core/Physics/v2/IPhysicsEnginePlugin";
 import { Logger } from "@babylonjs/core/Misc/logger";
+// Babylon 9 registers Scene.enablePhysics / getPhysicsEngine in the joined component only (8.x pulled it in from the v2
+// component), so import both.
+import "@babylonjs/core/Physics/joinedPhysicsEngineComponent";
 import "@babylonjs/core/Physics/v2/physicsEngineComponent";
 import Box3D from "../lib/node/box3d.mjs";
 import { Box3DPlugin } from "../src/box3dPlugin";
