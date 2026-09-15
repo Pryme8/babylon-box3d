@@ -19,7 +19,7 @@ import { PhysicsRaycastResult } from "@babylonjs/core/Physics/physicsRaycastResu
 import { type IRaycastQuery } from "@babylonjs/core/Physics/physicsRaycastResult";
 import { Logger } from "@babylonjs/core/Misc/logger";
 import { type PhysicsBody } from "@babylonjs/core/Physics/v2/physicsBody";
-import { type PhysicsConstraint } from "@babylonjs/core/Physics/v2/physicsConstraint";
+import { type PhysicsConstraint, type Physics6DoFConstraint, type Physics6DoFLimit } from "@babylonjs/core/Physics/v2/physicsConstraint";
 import { type PhysicsMaterial } from "@babylonjs/core/Physics/v2/physicsMaterial";
 import { type PhysicsShape } from "@babylonjs/core/Physics/v2/physicsShape";
 import { BoundingBox } from "@babylonjs/core/Culling/boundingBox";
@@ -69,6 +69,34 @@ interface IAxisState {
     target: number;
     maxForce: number;
     friction: number;
+    /** Physics6DoFLimit.stiffness: spring constant of a soft limit (N/m, or N*m/rad for angular axes) */
+    stiffness: number;
+    /** Physics6DoFLimit.damping */
+    damping: number;
+}
+
+/**
+ * How a SIX_DOF constraint is realised with Box3D's fixed joint types. Recomputed from the axis table whenever an axis
+ * changes, and reused as is when a disabled constraint is enabled again.
+ */
+interface ISixDofPlan {
+    jointType: Box3DJointType;
+    /** Box3D frame x, y, z as indices into the constraint basis [axis, perpAxis, axis x perpAxis], null for identity frames */
+    basis: Nullable<[number, number, number]>;
+    /** the Babylon axis that follows the single degree of freedom of a revolute, prismatic or distance joint */
+    primaryAxis: Nullable<PhysicsConstraintAxis>;
+    /** spherical cone angle, negative when the swing is free */
+    coneAngle: number;
+    /** spherical twist limits (about axis), null when free */
+    twist: Nullable<[number, number]>;
+    /** revolute angle, prismatic translation or distance length limits, null when free */
+    limit: Nullable<[number, number]>;
+    /** distance joints: a real spring at rest length limit[0] instead of a rope between the limits */
+    spring: boolean;
+    /** stiffest soft limit, mapped to Box3D spring or constraint softness per body pair */
+    stiffness: number;
+    damping: number;
+    angularStiffness: boolean;
 }
 
 class Box3DConstraintData {
@@ -81,6 +109,8 @@ class Box3DConstraintData {
     public frames = new Float32Array(14);
     public length = 0;
     public axes = new Map<PhysicsConstraintAxis, IAxisState>();
+    /** SIX_DOF only */
+    public plan: Nullable<ISixDofPlan> = null;
 }
 
 // shim joint types
@@ -1319,6 +1349,20 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         }
 
         const frames = cdata.frames;
+        if (cdata.plan) {
+            // SIX_DOF: the constraint basis is Havok's [axis, perpAxis, axis x perpAxis]; the plan picks which of them
+            // becomes Box3D's frame x, y and z (cyclic permutations, so the frames stay right handed)
+            const basis = cdata.plan.basis;
+            if (basis) {
+                const basisA = [axisA, perpA, thirdA];
+                const basisB = [axisB, perpB, thirdB];
+                this._frameToBuffer(frames, 0, pivotA, basisA[basis[0]], basisA[basis[1]], basisA[basis[2]]);
+                this._frameToBuffer(frames, 7, pivotB, basisB[basis[0]], basisB[basis[1]], basisB[basis[2]]);
+            } else {
+                frames.set([pivotA.x, pivotA.y, pivotA.z, 0, 0, 0, 1, pivotB.x, pivotB.y, pivotB.z, 0, 0, 0, 1]);
+            }
+            return;
+        }
         switch (cdata.type) {
             case PhysicsConstraintType.HINGE:
             case PhysicsConstraintType.BALL_AND_SOCKET:
@@ -1360,11 +1404,205 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
             Logger.Warn("Box3DPlugin: joint creation failed.");
             return 0;
         }
-        if (cdata.type === PhysicsConstraintType.SLIDER) {
-            // A slider allows rotation about the axis in Havok. Box3D's prismatic locks it; nothing to do here.
-        }
-        this._applyAxisState(cdata, joint);
+        // A slider allows rotation about the axis in Havok. Box3D's prismatic locks it.
+        this._applyAxisState(cdata, joint, bodyA, bodyB);
         return joint;
+    }
+
+    /** Reads Physics6DoFConstraint.limits into the axis table with Havok's rules. */
+    private _readSixDofLimits(cdata: Box3DConstraintData, limits: ReadonlyArray<Physics6DoFLimit> | undefined): void {
+        for (const limit of limits ?? []) {
+            const state = this._axisState(cdata, limit.axis);
+            if (limit.minLimit === 0 && limit.maxLimit === 0) {
+                state.mode = PhysicsConstraintAxisLimitMode.LOCKED;
+                state.min = 0;
+                state.max = 0;
+            } else if (limit.minLimit !== undefined || limit.maxLimit !== undefined) {
+                // a missing side is unbounded
+                state.mode = PhysicsConstraintAxisLimitMode.LIMITED;
+                state.min = limit.minLimit ?? -Infinity;
+                state.max = limit.maxLimit ?? Infinity;
+            }
+            state.stiffness = limit.stiffness ?? 0;
+            state.damping = limit.damping ?? 0;
+        }
+    }
+
+    /**
+     * Maps the six axes of a SIX_DOF constraint onto one Box3D joint, following Havok's semantics: an axis that is not
+     * listed is free, 0/0 is locked, anything else is limited. The constraint frame is [axis, perpAxis, axis x perpAxis];
+     * ANGULAR_X rotates about axis, ANGULAR_Y about perpAxis and ANGULAR_Z about axis x perpAxis, all measured as the
+     * rotation of the child frame relative to the parent frame (right handed, like Havok).
+     *  - all linear locked, all angular locked: weld
+     *  - all linear locked, one angular axis open: revolute about it, with its limits (one sided ranges work)
+     *  - all linear locked, two or three angular axes open: spherical, twist limits from ANGULAR_X and one symmetric
+     *    cone from ANGULAR_Y/Z (Box3D has no elliptical cone, the larger swing range is used)
+     *  - two linear locked, angular locked: prismatic along the open linear axis
+     *  - only LINEAR_DISTANCE constrained: distance joint (a spring when min == max and a stiffness is set)
+     *  - nothing constrained: filter joint (collision filtering only)
+     * Anything else warns once and uses the closest of these.
+     */
+    private _planSixDof(cdata: Box3DConstraintData): ISixDofPlan {
+        const Axis = PhysicsConstraintAxis;
+        const Mode = PhysicsConstraintAxisLimitMode;
+        const mode = (axis: PhysicsConstraintAxis) => cdata.axes.get(axis)?.mode ?? Mode.FREE;
+        const range = (axis: PhysicsConstraintAxis): [number, number] => {
+            const state = cdata.axes.get(axis)!;
+            return state.mode === Mode.LOCKED ? [0, 0] : [Math.min(state.min, state.max), Math.max(state.min, state.max)];
+        };
+        const clamp = (value: number, limit: number) => Math.max(-limit, Math.min(limit, value));
+        const maxAngle = 0.99 * Math.PI;
+        // Box3D's B3_HUGE, keeps an unbounded side of a linear range out of the solver as a real number
+        const maxLength = 100000;
+        const plan: ISixDofPlan = {
+            jointType: Box3DJointType.WELD,
+            basis: [0, 1, 2],
+            primaryAxis: null,
+            coneAngle: -1,
+            twist: null,
+            limit: null,
+            spring: false,
+            stiffness: 0,
+            damping: 0,
+            angularStiffness: false,
+        };
+        for (const [axis, state] of cdata.axes) {
+            if ((state.stiffness > 0 || state.damping > 0) && state.stiffness >= plan.stiffness) {
+                plan.stiffness = state.stiffness;
+                plan.damping = state.damping;
+                plan.angularStiffness = axis === Axis.ANGULAR_X || axis === Axis.ANGULAR_Y || axis === Axis.ANGULAR_Z;
+            }
+        }
+        const linear = [Axis.LINEAR_X, Axis.LINEAR_Y, Axis.LINEAR_Z];
+        const angular = [Axis.ANGULAR_X, Axis.ANGULAR_Y, Axis.ANGULAR_Z];
+        const linearLocked = linear.filter((a) => mode(a) === Mode.LOCKED).length;
+        const linearFree = linear.filter((a) => mode(a) === Mode.FREE).length;
+        const angularOpen = angular.filter((a) => mode(a) !== Mode.LOCKED);
+        const angularFree = angular.filter((a) => mode(a) === Mode.FREE).length;
+        const distanceMode = mode(Axis.LINEAR_DISTANCE);
+
+        if (distanceMode !== Mode.FREE) {
+            if (linearFree === 3 && angularFree === 3) {
+                const [lower, upper] = range(Axis.LINEAR_DISTANCE);
+                plan.jointType = Box3DJointType.DISTANCE;
+                plan.basis = null;
+                plan.primaryAxis = Axis.LINEAR_DISTANCE;
+                plan.limit = [Math.min(Math.max(0, lower), maxLength), Math.min(Math.max(0, upper), maxLength)];
+                plan.spring = plan.stiffness > 0 && Math.abs(upper - lower) < 1e-6 && isFinite(lower);
+                return plan;
+            }
+            this._warnOnce("sixdof-distance", "SIX_DOF: LINEAR_DISTANCE combined with other constrained axes is not supported with Box3D, the distance limit is ignored.");
+        }
+
+        // one open linear axis (free or limited) with the other two locked slides; see the prismatic case below
+        let pointJoint = linearLocked === 3;
+        if (!pointJoint && linearLocked !== 2 && linearFree === 0) {
+            this._warnOnce("sixdof-linear-limited", "SIX_DOF: two or more limited linear axes are treated as locked with Box3D.");
+            pointJoint = true;
+        }
+        if (pointJoint) {
+            if (angularOpen.length === 0) {
+                return plan;
+            }
+            if (angularOpen.length === 1) {
+                // Box3D revolutes rotate about frame z
+                const axis = angularOpen[0];
+                plan.jointType = Box3DJointType.REVOLUTE;
+                plan.basis = [
+                    [1, 2, 0],
+                    [2, 0, 1],
+                    [0, 1, 2],
+                ][angular.indexOf(axis)] as [number, number, number];
+                plan.primaryAxis = axis;
+                if (mode(axis) === Mode.LIMITED) {
+                    const [lower, upper] = range(axis);
+                    plan.limit = [clamp(lower, maxAngle), clamp(upper, maxAngle)];
+                }
+                return plan;
+            }
+            // spherical: cone centered on frame z (axis), twist about frame z
+            plan.jointType = Box3DJointType.SPHERICAL;
+            plan.basis = [1, 2, 0];
+            if (mode(Axis.ANGULAR_X) !== Mode.FREE) {
+                const [lower, upper] = range(Axis.ANGULAR_X);
+                plan.twist = [clamp(lower, maxAngle), clamp(upper, maxAngle)];
+            }
+            const swingModes = [mode(Axis.ANGULAR_Y), mode(Axis.ANGULAR_Z)];
+            if (swingModes.some((m) => m !== Mode.FREE)) {
+                const extents: number[] = [];
+                let asymmetric = false;
+                for (const axis of [Axis.ANGULAR_Y, Axis.ANGULAR_Z]) {
+                    if (mode(axis) === Mode.FREE) {
+                        continue;
+                    }
+                    const [lower, upper] = range(axis);
+                    extents.push(Math.max(Math.abs(lower), Math.abs(upper)));
+                    asymmetric ||= Math.abs(lower + upper) > 1e-4;
+                }
+                const cone = Math.max(...extents);
+                if (isFinite(cone)) {
+                    if (swingModes.includes(Mode.FREE) || Math.abs(extents[0] - extents[1]) > 1e-4 || asymmetric) {
+                        this._warnOnce(
+                            "sixdof-cone",
+                            "SIX_DOF: Box3D has one symmetric swing cone, ANGULAR_Y and ANGULAR_Z use the larger of their ranges."
+                        );
+                    }
+                    if (cone > Math.PI / 2) {
+                        this._warnOnce("sixdof-cone-90", "SIX_DOF: Box3D cone limits are at most 90 degrees, larger swing ranges are clamped.");
+                    }
+                    plan.coneAngle = Math.min(cone, Math.PI / 2);
+                }
+            }
+            return plan;
+        }
+
+        if (linearLocked === 2) {
+            // Box3D prismatics slide along frame x
+            const slide = linear.find((a) => mode(a) !== Mode.LOCKED)!;
+            plan.jointType = Box3DJointType.PRISMATIC;
+            plan.basis = [
+                [0, 1, 2],
+                [1, 2, 0],
+                [2, 0, 1],
+            ][linear.indexOf(slide)] as [number, number, number];
+            plan.primaryAxis = slide;
+            if (mode(slide) === Mode.LIMITED) {
+                const [lower, upper] = range(slide);
+                plan.limit = [clamp(lower, maxLength), clamp(upper, maxLength)];
+            }
+            if (angularOpen.length) {
+                this._warnOnce("sixdof-prismatic", "SIX_DOF: a sliding axis with rotation is not supported with Box3D, rotation is locked.");
+            }
+            return plan;
+        }
+
+        plan.jointType = Box3DJointType.FILTER;
+        plan.basis = null;
+        if (linearFree !== 3 || angularFree !== 3) {
+            this._warnOnce("sixdof-unsupported", "SIX_DOF: this combination of free and limited axes is not supported with Box3D, the bodies are left unconstrained.");
+        }
+        return plan;
+    }
+
+    /** Box3D spring settings for a Havok spring constant and damping on a body pair. */
+    private _springToHertz(stiffness: number, damping: number, angular: boolean, bodyA: Box3DBodyData, bodyB: Box3DBodyData): { hertz: number; dampingRatio: number } {
+        // effective mass (or rotational inertia) of the pair, a static or animated body counts as infinitely heavy
+        const inverse = (data: Box3DBodyData) => {
+            if (data.motionType !== PhysicsMotionType.DYNAMIC) {
+                return 0;
+            }
+            this._b3._bx_Body_GetMassData(data.slot);
+            const s = this._scratch();
+            const value = angular ? (s[4] + s[5] + s[6]) / 3 : s[0];
+            return value > 0 ? 1 / value : 0;
+        };
+        const inverseSum = inverse(bodyA) + inverse(bodyB);
+        const mass = inverseSum > 0 ? 1 / inverseSum : 1;
+        const k = Math.max(stiffness, 0);
+        return {
+            hertz: Math.sqrt(k / mass) / (2 * Math.PI),
+            dampingRatio: k > 0 ? damping / (2 * Math.sqrt(k * mass)) : 1,
+        };
     }
 
     public initConstraint(constraint: PhysicsConstraint, body: PhysicsBody, childBody: PhysicsBody, instanceIndex?: number, childInstanceIndex?: number): void {
@@ -1378,10 +1616,13 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
             Logger.Warn("Body is instanced but no instance index was specified. Constraint will not be applied.");
             return;
         }
+        const firstPair = !constraint._pluginData;
         const cdata: Box3DConstraintData = constraint._pluginData ?? new Box3DConstraintData();
         constraint._pluginData = cdata;
         cdata.type = type;
-        cdata.collisions = !!options.collision;
+        if (firstPair) {
+            cdata.collisions = !!options.collision;
+        }
         switch (type) {
             case PhysicsConstraintType.BALL_AND_SOCKET:
                 cdata.jointType = Box3DJointType.SPHERICAL;
@@ -1400,8 +1641,12 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
                 cdata.jointType = Box3DJointType.DISTANCE;
                 break;
             case PhysicsConstraintType.SIX_DOF:
-                this._warnOnce("sixdof", "SIX_DOF constraints are not supported yet, using a spherical joint.");
-                cdata.jointType = Box3DJointType.SPHERICAL;
+                // later pairs of the same constraint share the axis table, including changes made since the first pair
+                if (firstPair) {
+                    this._readSixDofLimits(cdata, (constraint as Physics6DoFConstraint).limits);
+                }
+                cdata.plan = this._planSixDof(cdata);
+                cdata.jointType = cdata.plan.jointType;
                 break;
             default:
                 Logger.Warn("Box3DPlugin: unknown constraint type " + type);
@@ -1411,17 +1656,26 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         const bodyA = this._getPluginReference(body, instanceIndex);
         const bodyB = this._getPluginReference(childBody, childInstanceIndex);
         this._buildFrames(cdata, constraint, bodyA, bodyB);
-        if (type === PhysicsConstraintType.DISTANCE) {
-            cdata.length = options.maxDistance ?? 0;
-            if (cdata.length <= 0) {
-                // use the current distance between the world space pivots
-                cdata.length = Math.max(0.01, this._currentPivotDistance(cdata, bodyA, bodyB));
-            }
+        this._updateJointLength(cdata, options.maxDistance, bodyA, bodyB);
+        // joints[i] belongs to pairs[i], 0 while the constraint is disabled or when creation failed
+        const joint = cdata.enabled ? this._createJoint(cdata, bodyA, bodyB) : 0;
+        cdata.joints.push(joint);
+        cdata.pairs.push({ parent: body, parentIndex: instanceIndex ?? 0, child: childBody, childIndex: childInstanceIndex ?? 0, parentData: bodyA, childData: bodyB });
+    }
+
+    /** Length parameter passed to Box3D's distance joint at creation (the rest length of its spring). */
+    private _updateJointLength(cdata: Box3DConstraintData, maxDistance: number | undefined, bodyA: Box3DBodyData, bodyB: Box3DBodyData): void {
+        if (cdata.type === PhysicsConstraintType.DISTANCE) {
+            cdata.length = maxDistance ?? 0;
+        } else if (cdata.plan?.jointType === Box3DJointType.DISTANCE && cdata.plan.limit) {
+            // a spring rests at its (single) limit; for a rope the rest length is unused, its limits do the work
+            cdata.length = cdata.plan.limit[0];
+        } else {
+            return;
         }
-        const joint = this._createJoint(cdata, bodyA, bodyB);
-        if (joint) {
-            cdata.joints.push(joint);
-            cdata.pairs.push({ parent: body, parentIndex: instanceIndex ?? 0, child: childBody, childIndex: childInstanceIndex ?? 0, parentData: bodyA, childData: bodyB });
+        if (cdata.length <= 0) {
+            // use the current distance between the world space pivots
+            cdata.length = Math.max(0.01, this._currentPivotDistance(cdata, bodyA, bodyB));
         }
     }
 
@@ -1446,18 +1700,17 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
             return;
         }
         cdata.enabled = isEnabled;
-        // Box3D has no enable flag on joints: destroy them, or re-create them from the saved definition.
-        for (const joint of cdata.joints) {
-            this._b3._bx_DestroyJoint(joint);
-        }
-        cdata.joints.length = 0;
-        if (isEnabled) {
-            for (const pair of cdata.pairs) {
-                const joint = this._createJoint(cdata, pair.parentData, pair.childData);
-                if (joint) {
-                    cdata.joints.push(joint);
-                }
+        // Box3D has no enable flag on joints: destroy them, or re-create them from the saved frames, plan and axis state.
+        this._recreateJoints(cdata);
+    }
+
+    private _recreateJoints(cdata: Box3DConstraintData): void {
+        for (let i = 0; i < cdata.pairs.length; i++) {
+            if (cdata.joints[i]) {
+                this._b3._bx_DestroyJoint(cdata.joints[i]);
             }
+            const pair = cdata.pairs[i];
+            cdata.joints[i] = cdata.enabled && pair.parentData.slot && pair.childData.slot ? this._createJoint(cdata, pair.parentData, pair.childData) : 0;
         }
     }
 
@@ -1469,7 +1722,9 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         const cdata = constraint._pluginData as Box3DConstraintData;
         cdata.collisions = isEnabled;
         for (const joint of cdata.joints) {
-            this._b3._bx_Joint_SetCollideConnected(joint, isEnabled ? 1 : 0);
+            if (joint) {
+                this._b3._bx_Joint_SetCollideConnected(joint, isEnabled ? 1 : 0);
+            }
         }
     }
 
@@ -1488,16 +1743,21 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
             case PhysicsConstraintType.DISTANCE:
                 return PhysicsConstraintAxis.LINEAR_DISTANCE;
             case PhysicsConstraintType.BALL_AND_SOCKET:
-            case PhysicsConstraintType.SIX_DOF:
                 return PhysicsConstraintAxis.ANGULAR_Y;
+            case PhysicsConstraintType.SIX_DOF:
+                return cdata.plan?.primaryAxis ?? null;
             default:
                 return null;
         }
     }
 
+    private _isAngularAxis(axis: PhysicsConstraintAxis): boolean {
+        return axis === PhysicsConstraintAxis.ANGULAR_X || axis === PhysicsConstraintAxis.ANGULAR_Y || axis === PhysicsConstraintAxis.ANGULAR_Z;
+    }
+
     private _isPrimaryAxis(cdata: Box3DConstraintData, axis: PhysicsConstraintAxis): boolean {
-        if (cdata.type === PhysicsConstraintType.BALL_AND_SOCKET || cdata.type === PhysicsConstraintType.SIX_DOF) {
-            return axis === PhysicsConstraintAxis.ANGULAR_X || axis === PhysicsConstraintAxis.ANGULAR_Y || axis === PhysicsConstraintAxis.ANGULAR_Z;
+        if (cdata.type === PhysicsConstraintType.BALL_AND_SOCKET || cdata.plan?.jointType === Box3DJointType.SPHERICAL) {
+            return this._isAngularAxis(axis);
         }
         return axis === this._primaryAxis(cdata);
     }
@@ -1505,14 +1765,29 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
     private _axisState(cdata: Box3DConstraintData, axis: PhysicsConstraintAxis): IAxisState {
         let state = cdata.axes.get(axis);
         if (!state) {
-            state = { mode: PhysicsConstraintAxisLimitMode.FREE, min: 0, max: 0, motor: PhysicsConstraintMotorType.NONE, target: 0, maxForce: 0, friction: 0 };
+            state = {
+                mode: PhysicsConstraintAxisLimitMode.FREE,
+                min: 0,
+                max: 0,
+                motor: PhysicsConstraintMotorType.NONE,
+                target: 0,
+                maxForce: 0,
+                friction: 0,
+                stiffness: 0,
+                damping: 0,
+            };
             cdata.axes.set(axis, state);
         }
         return state;
     }
 
-    private _applyAxisState(cdata: Box3DConstraintData, joint: number): void {
+    private _applyAxisState(cdata: Box3DConstraintData, joint: number, bodyA: Box3DBodyData, bodyB: Box3DBodyData): void {
         const b3 = this._b3;
+        if (cdata.plan) {
+            this._applySixDofPlan(cdata, joint, bodyA, bodyB);
+            b3._bx_Joint_WakeBodies(joint);
+            return;
+        }
         const primary = this._primaryAxis(cdata);
         if (primary === null) {
             return;
@@ -1521,7 +1796,7 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
             if (!this._isPrimaryAxis(cdata, axis)) {
                 continue;
             }
-            if (cdata.type === PhysicsConstraintType.BALL_AND_SOCKET || cdata.type === PhysicsConstraintType.SIX_DOF) {
+            if (cdata.type === PhysicsConstraintType.BALL_AND_SOCKET) {
                 if (axis === PhysicsConstraintAxis.ANGULAR_X) {
                     // twist about the primary axis (frame z in box3d)
                     b3._bx_Joint_SetTwistLimits(joint, state.mode === PhysicsConstraintAxisLimitMode.FREE ? 0 : 1, state.min, state.max);
@@ -1535,27 +1810,91 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
                 b3._bx_Joint_SetLimits(joint, min, max);
             }
             b3._bx_Joint_EnableLimit(joint, limited ? 1 : 0);
-            switch (state.motor) {
-                case PhysicsConstraintMotorType.VELOCITY:
-                    b3._bx_Joint_EnableSpring(joint, 0);
-                    b3._bx_Joint_EnableMotor(joint, 1);
-                    b3._bx_Joint_SetMotorSpeed(joint, state.target);
-                    b3._bx_Joint_SetMaxMotorForce(joint, state.maxForce);
-                    break;
-                case PhysicsConstraintMotorType.POSITION:
-                    b3._bx_Joint_EnableMotor(joint, 0);
-                    b3._bx_Joint_EnableSpring(joint, 1);
-                    b3._bx_Joint_SetSpring(joint, 5, 1);
-                    b3._bx_Joint_SetTarget(joint, state.target);
-                    break;
-                default:
-                    b3._bx_Joint_EnableMotor(joint, 0);
-                    b3._bx_Joint_EnableSpring(joint, 0);
-                    break;
-            }
+            this._applyMotor(joint, state);
         }
-        for (const joint2 of [joint]) {
-            b3._bx_Joint_WakeBodies(joint2);
+        b3._bx_Joint_WakeBodies(joint);
+    }
+
+    private _applyMotor(joint: number, state: IAxisState): void {
+        const b3 = this._b3;
+        switch (state.motor) {
+            case PhysicsConstraintMotorType.VELOCITY:
+                b3._bx_Joint_EnableSpring(joint, 0);
+                b3._bx_Joint_EnableMotor(joint, 1);
+                b3._bx_Joint_SetMotorSpeed(joint, state.target);
+                b3._bx_Joint_SetMaxMotorForce(joint, state.maxForce);
+                break;
+            case PhysicsConstraintMotorType.POSITION:
+                b3._bx_Joint_EnableMotor(joint, 0);
+                b3._bx_Joint_EnableSpring(joint, 1);
+                b3._bx_Joint_SetSpring(joint, 5, 1);
+                b3._bx_Joint_SetTarget(joint, state.target);
+                break;
+            default:
+                b3._bx_Joint_EnableMotor(joint, 0);
+                b3._bx_Joint_EnableSpring(joint, 0);
+                break;
+        }
+    }
+
+    /** Applies a SIX_DOF plan's limits, springs and motors to one of its Box3D joints. */
+    private _applySixDofPlan(cdata: Box3DConstraintData, joint: number, bodyA: Box3DBodyData, bodyB: Box3DBodyData): void {
+        const b3 = this._b3;
+        const plan = cdata.plan!;
+        switch (plan.jointType) {
+            case Box3DJointType.SPHERICAL:
+                if (plan.coneAngle >= 0) {
+                    b3._bx_Joint_SetLimits(joint, -plan.coneAngle, plan.coneAngle);
+                }
+                b3._bx_Joint_EnableLimit(joint, plan.coneAngle >= 0 ? 1 : 0);
+                b3._bx_Joint_SetTwistLimits(joint, plan.twist ? 1 : 0, plan.twist ? plan.twist[0] : 0, plan.twist ? plan.twist[1] : 0);
+                break;
+            case Box3DJointType.REVOLUTE:
+            case Box3DJointType.PRISMATIC:
+                if (plan.limit) {
+                    b3._bx_Joint_SetLimits(joint, plan.limit[0], plan.limit[1]);
+                }
+                b3._bx_Joint_EnableLimit(joint, plan.limit ? 1 : 0);
+                break;
+            case Box3DJointType.DISTANCE:
+                if (plan.spring) {
+                    const spring = this._springToHertz(plan.stiffness, plan.damping, false, bodyA, bodyB);
+                    b3._bx_Joint_EnableLimit(joint, 0);
+                    b3._bx_Joint_EnableSpring(joint, 1);
+                    b3._bx_Joint_SetSpring(joint, spring.hertz, spring.dampingRatio);
+                    b3._bx_Joint_SetTarget(joint, cdata.length);
+                } else {
+                    // an enabled spring with 0 hertz leaves the length free between the limits (a rope); Box3D keeps
+                    // equal limits rigid
+                    b3._bx_Joint_SetLimits(joint, plan.limit![0], plan.limit![1]);
+                    b3._bx_Joint_EnableLimit(joint, 1);
+                    b3._bx_Joint_EnableSpring(joint, 1);
+                    b3._bx_Joint_SetSpring(joint, 0, 0);
+                }
+                break;
+            default:
+                break;
+        }
+        if (plan.stiffness > 0 && !plan.spring) {
+            this._warnOnce(
+                "sixdof-softness",
+                "SIX_DOF: limit stiffness and damping are approximated with Box3D's per joint constraint softness, which applies to every axis of the joint."
+            );
+            const soft = this._springToHertz(plan.stiffness, plan.damping, plan.angularStiffness, bodyA, bodyB);
+            b3._bx_Joint_SetConstraintTuning(joint, soft.hertz, soft.dampingRatio);
+        }
+        if (plan.jointType === Box3DJointType.SPHERICAL) {
+            for (const axis of [PhysicsConstraintAxis.ANGULAR_Y, PhysicsConstraintAxis.ANGULAR_Z]) {
+                const state = cdata.axes.get(axis);
+                if (state && state.motor !== PhysicsConstraintMotorType.NONE) {
+                    this._applyMotor(joint, state);
+                }
+            }
+        } else if (plan.primaryAxis !== null && plan.jointType !== Box3DJointType.DISTANCE) {
+            const state = cdata.axes.get(plan.primaryAxis);
+            if (state) {
+                this._applyMotor(joint, state);
+            }
         }
     }
 
@@ -1564,13 +1903,36 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         if (!cdata) {
             return;
         }
-        apply(this._axisState(cdata, axis));
-        if (!this._isPrimaryAxis(cdata, axis)) {
+        const state = this._axisState(cdata, axis);
+        const previousMotor = { motor: state.motor, target: state.target, maxForce: state.maxForce };
+        apply(state);
+        if (cdata.plan) {
+            // SIX_DOF: every axis shapes the plan. A different Box3D joint type or frame needs new joints.
+            const plan = this._planSixDof(cdata);
+            const rebuild = plan.jointType !== cdata.plan.jointType || String(plan.basis) !== String(cdata.plan.basis);
+            cdata.plan = plan;
+            cdata.jointType = plan.jointType;
+            const motorChanged = previousMotor.motor !== state.motor || previousMotor.target !== state.target || previousMotor.maxForce !== state.maxForce;
+            if (motorChanged && state.motor !== PhysicsConstraintMotorType.NONE && !this._isPrimaryAxis(cdata, axis)) {
+                this._warnOnce(`axis-motor-${axis}`, `SIX_DOF: a motor on axis ${axis} has no effect with the Box3D joint this constraint maps to.`);
+            }
+            if (rebuild) {
+                const first = cdata.pairs[0];
+                if (first) {
+                    this._buildFrames(cdata, constraint, first.parentData, first.childData);
+                    this._updateJointLength(cdata, constraint.options.maxDistance, first.parentData, first.childData);
+                }
+                this._recreateJoints(cdata);
+                return;
+            }
+        } else if (!this._isPrimaryAxis(cdata, axis)) {
             this._warnOnce(`axis-${cdata.type}-${axis}`, `axis ${axis} is not configurable on constraint type ${cdata.type} with Box3D; the value is stored but has no effect.`);
             return;
         }
-        for (const joint of cdata.joints) {
-            this._applyAxisState(cdata, joint);
+        for (let i = 0; i < cdata.joints.length; i++) {
+            if (cdata.joints[i]) {
+                this._applyAxisState(cdata, cdata.joints[i], cdata.pairs[i].parentData, cdata.pairs[i].childData);
+            }
         }
     }
 
@@ -1649,7 +2011,9 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
             return;
         }
         for (const joint of cdata.joints) {
-            this._b3._bx_DestroyJoint(joint);
+            if (joint) {
+                this._b3._bx_DestroyJoint(joint);
+            }
         }
         cdata.joints.length = 0;
         cdata.pairs.length = 0;

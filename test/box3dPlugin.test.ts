@@ -2,6 +2,7 @@ import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { type TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import {
     type IPhysicsCollisionEvent,
+    PhysicsConstraintAxis,
     PhysicsConstraintType,
     PhysicsEventType,
     PhysicsMotionType,
@@ -282,6 +283,47 @@ describe("Box3DPlugin constraints", () => {
         plugin.setEnabled(constraint, true);
         expect(mod.b3._bx_CreateJoint).toHaveBeenCalledTimes(2);
         expect(plugin.getEnabled(constraint)).toBe(true);
+    });
+});
+
+describe("Box3DPlugin SIX_DOF mapping", () => {
+    const A = PhysicsConstraintAxis;
+    const lock = (axis: PhysicsConstraintAxis) => ({ axis, minLimit: 0, maxLimit: 0 });
+    const lim = (axis: PhysicsConstraintAxis, minLimit?: number, maxLimit?: number) => ({ axis, minLimit, maxLimit });
+    const linear = [lock(A.LINEAR_X), lock(A.LINEAR_Y), lock(A.LINEAR_Z)];
+    // Box3DJointType values: weld 0, spherical 1, revolute 2, prismatic 3, distance 4, filter 5
+    const cases: Array<[string, any[], Record<string, unknown>]> = [
+        ["all locked -> weld", [...linear, lock(A.ANGULAR_X), lock(A.ANGULAR_Y), lock(A.ANGULAR_Z)], { jointType: 0, basis: [0, 1, 2] }],
+        ["knee -> revolute about perpAxis", [...linear, lock(A.ANGULAR_X), lim(A.ANGULAR_Y, 0, 2.4), lock(A.ANGULAR_Z)], { jointType: 2, basis: [2, 0, 1], limit: [0, 2.4], primaryAxis: A.ANGULAR_Y }],
+        ["twist only -> revolute about axis", [...linear, lim(A.ANGULAR_X, -0.2, 1), lock(A.ANGULAR_Y), lock(A.ANGULAR_Z)], { jointType: 2, basis: [1, 2, 0], limit: [-0.2, 1] }],
+        ["free ANGULAR_Z -> revolute without limit", [...linear, lock(A.ANGULAR_X), lock(A.ANGULAR_Y)], { jointType: 2, basis: [0, 1, 2], limit: null }],
+        ["cone -> spherical", [...linear, lim(A.ANGULAR_X, -0.3, 0.5), lim(A.ANGULAR_Y, -0.6, 0.6), lim(A.ANGULAR_Z, -0.6, 0.6)], { jointType: 1, basis: [1, 2, 0], twist: [-0.3, 0.5] }],
+        ["free angular -> spherical without limits", linear, { jointType: 1, twist: null, coneAngle: -1 }],
+        ["slider on LINEAR_Z -> prismatic", [lock(A.LINEAR_X), lock(A.LINEAR_Y), lim(A.LINEAR_Z, -1, 2), lock(A.ANGULAR_X), lock(A.ANGULAR_Y), lock(A.ANGULAR_Z)], { jointType: 3, basis: [2, 0, 1], limit: [-1, 2] }],
+        ["spring -> distance", [{ axis: A.LINEAR_DISTANCE, minLimit: 1, maxLimit: 1, stiffness: 10 }], { jointType: 4, basis: null, spring: true, limit: [1, 1] }],
+        ["rope -> distance", [lim(A.LINEAR_DISTANCE, 0.5, 2)], { jointType: 4, spring: false, limit: [0.5, 2] }],
+        ["nothing -> filter", [], { jointType: 5 }],
+    ];
+    for (const [name, limits, expected] of cases) {
+        it(name, () => {
+            const plugin = new Box3DPlugin(true, createModule().b3);
+            const cdata: any = { axes: new Map() };
+            (plugin as any)._readSixDofLimits(cdata, limits);
+            const plan = (plugin as any)._planSixDof(cdata);
+            expect(plan).toMatchObject(expected);
+        });
+    }
+
+    it("uses the larger swing range for Box3D's symmetric cone and warns once", () => {
+        const plugin = new Box3DPlugin(true, createModule().b3);
+        const warn = vi.spyOn(plugin as any, "_warnOnce");
+        const cdata: any = { axes: new Map() };
+        (plugin as any)._readSixDofLimits(cdata, [...linear, lock(A.ANGULAR_X), lim(A.ANGULAR_Y, -0.3, 0.9), lim(A.ANGULAR_Z, -0.5, 0.5)]);
+        const plan = (plugin as any)._planSixDof(cdata);
+        expect(plan.jointType).toBe(1);
+        expect(plan.coneAngle).toBeCloseTo(0.9);
+        expect(plan.twist).toEqual([0, 0]);
+        expect(warn).toHaveBeenCalledWith("sixdof-cone", expect.any(String));
     });
 });
 
