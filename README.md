@@ -42,11 +42,32 @@ The wasm is fetched next to the loader script. With a bundler pass `locateFile`,
 | `PRISMATIC`, `SLIDER` | prismatic joint |
 | `LOCK` | weld joint |
 | `DISTANCE` | distance joint with a fixed length of `maxDistance` |
-| `SIX_DOF`, `SpringConstraint` | not supported yet |
+| `SIX_DOF` (`Physics6DoFConstraint`) | one Box3D joint chosen from the limits with Havok's axis rules, see below |
+| `SpringConstraint` | distance joint spring (`stiffness` in N/m like Havok) |
 | `COLLISION_STARTED` / `FINISHED` | contact begin / end touch events |
 | `COLLISION_CONTINUED` | contact hit events (point, normal, approach speed as `impulse`) |
 | `TRIGGER_ENTERED` / `EXITED` | sensor events |
 | thin instances | one Box3D body per instance |
+
+`SIX_DOF` limits follow Havok: an axis that is not listed is free, `minLimit === maxLimit === 0` locks it, anything
+else limits it (one sided ranges such as 0..140 degrees work). The frame is `[axis, perpAxis, axis x perpAxis]` on each
+body; `ANGULAR_X` is the rotation of the child frame about `axis`, `ANGULAR_Y` about `perpAxis` and `ANGULAR_Z` about
+`axis x perpAxis`, right handed, in the same directions as Havok (the tests check this against Havok). Box3D has a fixed
+set of joints, so the limits pick one:
+
+| linear axes | angular axes | Box3D joint |
+| --- | --- | --- |
+| all locked | all locked | weld |
+| all locked | one limited or free | revolute about that axis with its limits |
+| all locked | two or three open | spherical: twist limits from `ANGULAR_X`, one symmetric cone from `ANGULAR_Y`/`ANGULAR_Z` |
+| two locked | all locked | prismatic along the open axis |
+| only `LINEAR_DISTANCE` | free | distance joint (a spring when min == max and a stiffness is set, a rope otherwise) |
+| free | free | filter joint (only disables collision between the pair) |
+
+Box3D's cone is symmetric: when the `ANGULAR_Y` and `ANGULAR_Z` ranges differ or are asymmetric the larger one is used
+and a warning is logged once; cones are capped at 90 degrees. Limit `stiffness`/`damping` become Box3D's per joint
+constraint softness, an approximation that applies to the whole joint. Other combinations warn once and use the closest
+joint above.
 
 Box3D extras on the plugin: `explode`, `createWheelJoint` (suspension, steering, spin motor), `createParallelJoint`,
 `setShapeFilterGroup`, `setShapeRollingResistance`, `setAllowFastRotation`, `getStats`. `PhysicsCharacterController`
