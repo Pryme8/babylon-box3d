@@ -108,6 +108,8 @@ typedef struct bxBody
 	int helperCapacity;
 } bxBody;
 
+static void bxReleaseBodyShapes( bxBody* body, int destroyShapes );
+
 static bxBody* s_bodies;
 static int s_bodyCount;
 static int s_bodyCapacity;
@@ -381,6 +383,9 @@ BX_EXPORT void bx_DestroyWorld( int w )
 	{
 		if ( s_bodies[i].alive && s_bodies[i].world == w )
 		{
+			// the world is gone, so the shapes are too, but their geometry still has to be released: mesh and height
+			// field descriptions are reference counted and a mesh baked for this body is owned by it
+			bxReleaseBodyShapes( s_bodies + i, 0 );
 			free( s_bodies[i].shapes );
 			free( s_bodies[i].shapeDescs );
 			free( s_bodies[i].geomDescs );
@@ -1027,6 +1032,66 @@ BX_EXPORT void bx_Body_GetAABB( int slot )
 	bxWriteVec3( 3, aabb.upperBound );
 }
 
+/// Mass data the body's shapes would give it, whatever its type. Box3D keeps mass 0 on static and kinematic bodies,
+/// while Havok reports the shape mass for every body, so the plugin uses this for its mass property getters.
+/// scratch: [mass, cx, cy, cz, ixx, iyy, izz, ixy, ixz, iyz]
+BX_EXPORT void bx_Body_ComputeShapeMassData( int slot )
+{
+	memset( s_scratch, 0, 10 * sizeof( float ) );
+	bxBody* body = bxGetBody( slot );
+	if ( body == NULL || b3Body_IsValid( body->id ) == false )
+	{
+		return;
+	}
+	float mass = 0.0f;
+	b3Vec3 center = b3Vec3_zero;
+	for ( int i = 0; i < body->shapeCount; ++i )
+	{
+		if ( b3Shape_IsValid( body->shapes[i] ) == false )
+		{
+			continue;
+		}
+		b3MassData md = b3Shape_ComputeMassData( body->shapes[i] );
+		mass += md.mass;
+		center = b3MulAdd( center, md.mass, md.center );
+	}
+	if ( mass <= 0.0f )
+	{
+		return;
+	}
+	center = b3MulSV( 1.0f / mass, center );
+	// parallel axis theorem: shift each shape's inertia to the combined center of mass
+	b3Matrix3 inertia = b3Mat3_zero;
+	for ( int i = 0; i < body->shapeCount; ++i )
+	{
+		if ( b3Shape_IsValid( body->shapes[i] ) == false )
+		{
+			continue;
+		}
+		b3MassData md = b3Shape_ComputeMassData( body->shapes[i] );
+		b3Vec3 d = b3Sub( md.center, center );
+		float dd = b3Dot( d, d );
+		inertia = b3AddMM( inertia, md.inertia );
+		inertia.cx.x += md.mass * ( dd - d.x * d.x );
+		inertia.cy.y += md.mass * ( dd - d.y * d.y );
+		inertia.cz.z += md.mass * ( dd - d.z * d.z );
+		inertia.cy.x -= md.mass * d.x * d.y;
+		inertia.cx.y -= md.mass * d.x * d.y;
+		inertia.cz.x -= md.mass * d.x * d.z;
+		inertia.cx.z -= md.mass * d.x * d.z;
+		inertia.cz.y -= md.mass * d.y * d.z;
+		inertia.cy.z -= md.mass * d.y * d.z;
+	}
+	s_scratch[0] = mass;
+	bxWriteVec3( 1, center );
+	s_scratch[4] = inertia.cx.x;
+	s_scratch[5] = inertia.cy.y;
+	s_scratch[6] = inertia.cz.z;
+	s_scratch[7] = inertia.cy.x;
+	s_scratch[8] = inertia.cz.x;
+	s_scratch[9] = inertia.cz.y;
+}
+
 /// scratch: [mass, cx, cy, cz, ixx, iyy, izz, ixy, ixz, iyz], the inertia tensor about the center of mass
 BX_EXPORT void bx_Body_GetMassData( int slot )
 {
@@ -1579,6 +1644,20 @@ BX_EXPORT int bx_GetShapeBuildCount( void )
 	return s_shapeBuildCount;
 }
 
+/// Live shape descriptions, including the mesh copies baked for container children. Used to spot leaks.
+BX_EXPORT int bx_GetShapeDescCount( void )
+{
+	int count = 0;
+	for ( int i = 1; i < s_descCount; ++i )
+	{
+		if ( s_descs[i].alive != 0 || s_descs[i].refCount > 0 )
+		{
+			count += 1;
+		}
+	}
+	return count;
+}
+
 /// descSlot is the description the shape belongs to, geomSlot the one owning the geometry it was built from (the same,
 /// unless a transformed mesh copy was baked for this body).
 static void bxBodyPushShape( bxBody* body, b3ShapeId shapeId, int descSlot, int geomSlot )
@@ -1727,7 +1806,16 @@ static void bxInstantiate( bxBody* body, int descSlot, b3Transform xf, b3Vec3 sc
 				int baked = bxBakeTransformedMesh( desc, xf, meshScale );
 				if ( baked != 0 )
 				{
-					bxBodyPushShape( body, b3CreateMeshShape( body->id, &def, s_descs[baked].mesh, b3Vec3_one ), descSlot, baked );
+					b3ShapeId shapeId = b3CreateMeshShape( body->id, &def, s_descs[baked].mesh, b3Vec3_one );
+					if ( B3_IS_NON_NULL( shapeId ) )
+					{
+						bxBodyPushShape( body, shapeId, descSlot, baked );
+					}
+					else
+					{
+						// nothing recorded the baked copy, so free it here instead of leaking the slot and its mesh
+						bx_ShapeDesc_Destroy( baked );
+					}
 				}
 			}
 			break;
@@ -1765,9 +1853,16 @@ static void bxInstantiate( bxBody* body, int descSlot, b3Transform xf, b3Vec3 sc
 		}
 		case bx_containerDesc:
 		{
-			for ( int i = 0; i < desc->childCount; ++i )
+			// Instantiating a child can bake a mesh, which allocates a description and may move the description table,
+			// so `desc` must be re-fetched every iteration instead of being held across the recursion.
+			for ( int i = 0;; ++i )
 			{
-				bxChild child = desc->children[i];
+				bxShapeDesc* container = bxGetDesc( descSlot );
+				if ( container == NULL || i >= container->childCount )
+				{
+					break;
+				}
+				bxChild child = container->children[i];
 				bxInstantiate( body, child.desc, b3MulTransforms( xf, child.transform ), bxMulScale( scale, child.scale ), depth + 1 );
 			}
 			break;

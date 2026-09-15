@@ -113,6 +113,8 @@ export interface Box3DExports {
     ): void;
     /** scratch: [lx, ly, lz, ax, ay, az], 1 where the motion is locked */
     _bx_Body_GetMotionLocks(body: number): void;
+    /** Mass data the body's shapes would give it whatever its type (Box3D keeps mass 0 on static and kinematic bodies). */
+    _bx_Body_ComputeShapeMassData(body: number): void;
     _bx_Body_ApplyMassFromShapes(body: number): void;
     _bx_Body_GetShapeCount(body: number): number;
     /** Begin/end touch events and hit events on the body's shapes, enabled separately. */
@@ -127,6 +129,8 @@ export interface Box3DExports {
     _bx_Body_SyncShapeDesc(body: number, desc: number, what: number): void;
     /** Total number of box3d shapes the shim has created, to tell a rebuild from an in place update. */
     _bx_GetShapeBuildCount(): number;
+    /** Live shape descriptions, including meshes baked for container children. */
+    _bx_GetShapeDescCount(): number;
     _bx_Body_GetShapeDesc(body: number): number;
 
     // shape descriptions

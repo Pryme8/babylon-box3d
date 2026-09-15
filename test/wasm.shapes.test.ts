@@ -164,6 +164,69 @@ describe("Box3D shape properties (real wasm)", () => {
         expect(onEdge.position.y).toBeCloseTo(1.25, 1);
     });
 
+    it("instantiates containers with mesh children while the description table grows", async () => {
+        world = await CreateWasmScene();
+        const w = world;
+        const plate = MeshBuilder.CreateBox("plate", { width: 1, height: 0.2, depth: 1 }, w.scene);
+        plate.isVisible = false;
+        // baking a mesh child allocates a description, which can move the description table while the container that
+        // owns it is still being instantiated; its second child is only reached after that
+        for (let i = 0; i < 120; i++) {
+            const container = new PhysicsShapeContainer(w.scene);
+            container.addChild(new PhysicsShapeMesh(plate, w.scene), new Vector3(2, 0, 0));
+            container.addChild(new PhysicsShapeBox(Vector3.Zero(), Quaternion.Identity(), new Vector3(0.5, 0.5, 0.5), w.scene), new Vector3(0, 0, 2));
+            const holder = CreateBoxBody(w.scene, `holder${i}`, new Vector3(i * 6, 0, 0), new Vector3(0.1, 0.1, 0.1), PhysicsMotionType.STATIC);
+            holder.body.shape = container;
+        }
+        // every container gave its body both children: the baked mesh and the box, plus each holder's own first shape
+        w.b3._bx_World_GetStats((w.plugin as any)._worldSlot);
+        const shapeCount = new Float32Array(w.b3.HEAPF32.buffer, w.b3._bx_Scratch(), 8)[1];
+        expect(shapeCount).toBe(120 * 2);
+        // and the second child is where it should be: a sphere dropped over it lands on top
+        const node = new TransformNode("ball", w.scene);
+        node.position.set(119 * 6, 3, 2);
+        node.rotationQuaternion = Quaternion.Identity();
+        const ball = new PhysicsBody(node, PhysicsMotionType.DYNAMIC, false, w.scene);
+        ball.shape = new PhysicsShapeSphere(Vector3.Zero(), 0.25, w.scene);
+        ball.setMassProperties({ mass: 1 });
+        w.step(120);
+        expect(node.position.y).toBeCloseTo(0.5, 1);
+    });
+
+    it("frees mesh data when a world is disposed with bodies still in it", async () => {
+        // Box3DPlugin.dispose goes through bx_DestroyWorld with every body still alive, which has to release the mesh
+        // data those bodies hold: shared meshes are reference counted and a container's mesh child is baked per body
+        const first = await CreateWasmScene();
+        const heap = () => first.b3.HEAPU8.byteLength;
+        const buildWorld = async () => {
+            const scene = await CreateWasmScene();
+            const plate = MeshBuilder.CreateBox("plate", { width: 2, height: 0.4, depth: 2 }, scene.scene);
+            plate.isVisible = false;
+            const mesh = new PhysicsShapeMesh(plate, scene.scene);
+            for (let i = 0; i < 40; i++) {
+                const container = new PhysicsShapeContainer(scene.scene);
+                container.addChild(mesh, new Vector3(1, 0, 0));
+                const holder = CreateBoxBody(scene.scene, `holder${i}`, new Vector3(i * 8, 0, 0), new Vector3(0.1, 0.1, 0.1), PhysicsMotionType.STATIC);
+                holder.body.shape = container;
+            }
+            // tear the plugin down with the bodies still in it, which is what disablePhysicsEngine does; disposing the
+            // scene instead would dispose every body first and take the other path
+            scene.plugin.dispose();
+            scene.dispose();
+        };
+        await buildWorld();
+        const settledHeap = heap();
+        const settledDescs = first.b3._bx_GetShapeDescCount();
+        for (let round = 0; round < 6; round++) {
+            await buildWorld();
+        }
+        // a baked mesh that outlives its world keeps its description, its slot and its mesh data
+        expect(first.b3._bx_GetShapeDescCount()).toBe(settledDescs);
+        expect(heap()).toBe(settledHeap);
+        first.dispose();
+        world = undefined;
+    });
+
     it("keeps the user mass properties when a body's shape is replaced", async () => {
         world = await CreateWasmScene();
         const w = world;
