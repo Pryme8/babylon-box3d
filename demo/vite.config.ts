@@ -16,11 +16,17 @@ export default defineConfig({
         ],
     },
     optimizeDeps: {
-        // the emscripten loader uses import.meta.url to find the wasm, keep it out of the pre-bundle
-        exclude: ["babylon-box3d"],
+        // emscripten loaders use import.meta.url to find their wasm, keep them out of the pre-bundle
+        exclude: ["babylon-box3d", "@babylonjs/havok"],
     },
     build: {
         outDir: path.join(repoRoot, "demo-dist"),
         emptyOutDir: true,
+        rollupOptions: {
+            input: {
+                showcase: path.join(demoRoot, "index.html"),
+                bench: path.join(demoRoot, "bench.html"),
+            },
+        },
     },
 });

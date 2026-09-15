@@ -71,10 +71,33 @@ and mesh winding is flipped, exactly like the Havok plugin.
 | `demo/` | vite showcase: `npm run demo`, then `http://localhost:5178/?demo=pyramid` |
 | `docs/` | the community extension page for the Babylon.js documentation |
 | `test/` | vitest unit tests with a mocked wasm module, node smoke test against the real wasm |
+| `bench/` | Box3D vs Havok vs Oimo benchmark: `npm run bench` (node) or `demo/bench.html` (browser), results in `bench/results` |
 
 Demos: `pyramid` (Box3D's Large Pyramid benchmark, thin instances, `&rows=100` for 5050 boxes, click to explode),
 `ragdolls` (Erin's human ragdoll sliding down a chute), `car` (wheel joints, WASD), `destruction` (brick tower and
 wrecking ball), plus `stack`, `joints`, `terrain`, `compound` feature tests. Add `&ui=0` to hide the overlay.
+
+## Benchmarks
+
+Box3D, Havok and Oimo build the same scenes through Babylon's regular physics API (v2 for Box3D and Havok, v1 for
+Oimo), with engine defaults, a fixed 1/60 s step and nothing rendered. "Step" is Babylon's whole physics step,
+"engine" is only the engine's own world step. Median of 3 interleaved runs after a warm up, AMD Ryzen 9 5900X,
+Babylon.js 8.56.2, @babylonjs/havok 1.3.14, oimo 1.0.9. Mean milliseconds per step, sleep on:
+
+| Scene | Box3D | Havok | Oimo |
+| --- | ---: | ---: | ---: |
+| Pyramid, 20 rows (210 boxes) | 0.09 | 0.47 | 5.94 |
+| Pyramid, 50 rows (1275 boxes) | 0.89 | 7.05, collapses | 69.4, collapses |
+| Pyramid, 100 rows (5050 boxes) | 31.7 | 29.9, collapses | 219, collapses |
+| Pile, 1000 boxes and spheres | 3.45 | 4.26 | 33.3 |
+| Pile, 4000 boxes and spheres | 22.0 | 23.8 | 196 |
+
+- Box3D keeps every pyramid standing for 30 s of simulated time, up to 100 rows. With Babylon's default Havok setup
+  a 30 row pyramid is flat within 30 s and a 50 row one within 10 s (`bench/results/pyramid-stability-*.md`).
+- In the piles Havok's own world step is faster (17.7 ms vs 20.8 ms at 4000 bodies). Box3D's full Babylon step is
+  faster because the plugin only syncs bodies that Box3D reports as moved.
+- Chrome gives the same picture as node (`bench/results/chrome-*.md`). Full tables, including sleep off, p95 and
+  max step times, are in `bench/results`. Run `npm run bench` or open `bench.html` from `npm run demo` to reproduce.
 
 ## Building
 

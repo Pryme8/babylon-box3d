@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <title>Box3D vs Havok vs Oimo benchmark</title>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width" />
+        <style>
+            :root {
+                color-scheme: dark;
+                --bg: #1b1d24;
+                --panel: #242733;
+                --line: #343849;
+                --text: #e7e9ee;
+                --muted: #9aa0b1;
+                --accent: #6cc4ff;
+            }
+            body {
+                margin: 0;
+                background: var(--bg);
+                color: var(--text);
+                font: 14px/1.5 system-ui, sans-serif;
+            }
+            main {
+                max-width: 1100px;
+                margin: 0 auto;
+                padding: 24px 16px 48px;
+            }
+            h1 {
+                font-size: 22px;
+                margin: 0 0 4px;
+            }
+            p {
+                color: var(--muted);
+                margin: 0 0 16px;
+            }
+            fieldset {
+                border: 1px solid var(--line);
+                border-radius: 8px;
+                background: var(--panel);
+                margin: 0 0 12px;
+                padding: 10px 14px;
+            }
+            legend {
+                color: var(--muted);
+                padding: 0 6px;
+            }
+            label {
+                margin-right: 14px;
+                white-space: nowrap;
+            }
+            button {
+                background: var(--accent);
+                color: #0b1b26;
+                border: 0;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: 600;
+                cursor: pointer;
+                margin-right: 8px;
+            }
+            button:disabled {
+                opacity: 0.5;
+                cursor: default;
+            }
+            #status {
+                color: var(--muted);
+                margin: 12px 0;
+                min-height: 1.5em;
+            }
+            .table-wrap {
+                overflow-x: auto;
+            }
+            table {
+                border-collapse: collapse;
+                width: 100%;
+                font-variant-numeric: tabular-nums;
+            }
+            th,
+            td {
+                border-bottom: 1px solid var(--line);
+                padding: 6px 8px;
+                text-align: right;
+                white-space: nowrap;
+            }
+            th:nth-child(-n + 4),
+            td:nth-child(-n + 4),
+            td:last-child,
+            th:last-child {
+                text-align: left;
+            }
+            tr.best td:nth-child(5) {
+                color: #7ee787;
+                font-weight: 600;
+            }
+            textarea {
+                width: 100%;
+                min-height: 160px;
+                margin-top: 12px;
+                background: var(--panel);
+                color: var(--text);
+                border: 1px solid var(--line);
+                border-radius: 8px;
+                font: 12px/1.4 ui-monospace, monospace;
+            }
+        </style>
+    </head>
+    <body>
+        <main>
+            <h1>Box3D vs Havok vs Oimo</h1>
+            <p>
+                Every engine builds the same scene through Babylon's physics API and steps it 600 times at a fixed 1/60 s. Nothing is rendered while
+                measuring. "Step" is Babylon's whole physics step, "engine" is only the engine's world step. Keep this tab in the foreground while it
+                runs.
+            </p>
+            <fieldset id="scenes">
+                <legend>Scenes</legend>
+            </fieldset>
+            <fieldset id="engines">
+                <legend>Engines</legend>
+            </fieldset>
+            <fieldset>
+                <legend>Options</legend>
+                <label><input type="checkbox" id="sleepOn" checked /> sleep on (engine defaults)</label>
+                <label><input type="checkbox" id="sleepOff" /> sleep off (raw solver throughput)</label>
+                <label>repeats <input type="number" id="repeats" value="1" min="1" max="9" style="width: 3em" /></label>
+            </fieldset>
+            <button id="run">Run benchmark</button>
+            <button id="copy" disabled>Copy markdown</button>
+            <div id="status"></div>
+            <div class="table-wrap"><table id="results"></table></div>
+            <textarea id="markdown" readonly hidden></textarea>
+        </main>
+        <script type="module" src="/src/bench.ts"></script>
+    </body>
+</html>

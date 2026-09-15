@@ -8,7 +8,14 @@
         "type": "git",
         "url": "https://github.com/Pryme8/babylon-box3d"
     },
-    "keywords": ["babylon.js", "babylonjs", "box3d", "physics", "wasm", "extension"],
+    "keywords": [
+        "babylon.js",
+        "babylonjs",
+        "box3d",
+        "physics",
+        "wasm",
+        "extension"
+    ],
     "type": "module",
     "main": "./dist/index.js",
     "module": "./dist/index.js",
@@ -30,7 +37,16 @@
         "./umd/*": "./umd/*",
         "./package.json": "./package.json"
     },
-    "files": ["dist", "lib", "umd", "wasm/box3d_shim.c", "UPSTREAM_COMMIT", "LICENSE", "LICENSE-box3d.txt", "README.md"],
+    "files": [
+        "dist",
+        "lib",
+        "umd",
+        "wasm/box3d_shim.c",
+        "UPSTREAM_COMMIT",
+        "LICENSE",
+        "LICENSE-box3d.txt",
+        "README.md"
+    ],
     "sideEffects": false,
     "scripts": {
         "build": "npm run build:esm && npm run build:umd",
@@ -41,6 +57,7 @@
         "test:wasm": "node test/wasm.smoke.mjs",
         "test:unit": "vitest run",
         "demo": "vite --config demo/vite.config.ts",
+        "bench": "node --expose-gc --import tsx bench/node.ts",
         "prepublishOnly": "npm run build && npm test"
     },
     "peerDependencies": {
@@ -48,7 +65,10 @@
     },
     "devDependencies": {
         "@babylonjs/core": "^8.0.0",
+        "@babylonjs/havok": "^1.3.14",
         "esbuild": "^0.25.0",
+        "oimo": "^1.0.9",
+        "tsx": "^4.23.13",
         "typescript": "^5.6.0",
         "vite": "^6.0.0",
         "vitest": "^3.0.0"

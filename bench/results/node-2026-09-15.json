@@ -1,0 +1,636 @@
+{
+  "environment": {
+    "date": "2026-09-15T14:26:52.540Z",
+    "cpu": "AMD Ryzen 9 5900X 12-Core Processor",
+    "cores": 24,
+    "platform": "win32 10.0.26200",
+    "node": "v24.13.0",
+    "babylon": "8.56.2",
+    "havok": "1.3.14",
+    "oimo": "1.0.9",
+    "box3d": "47d7f7cc7e09",
+    "timestep": "1/60 s fixed, one step per call",
+    "settings": "engine defaults (Box3D 4 sub steps, Havok defaults, Oimo 8 iterations), friction 0.6, restitution 0, density 1000"
+  },
+  "repeats": 3,
+  "results": [
+    {
+      "scene": "pyramid-20",
+      "sceneLabel": "Pyramid, 20 rows",
+      "bodies": 210,
+      "engine": "box3d",
+      "sleep": true,
+      "buildMs": 6.193199999999706,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 0.08939783333333101,
+      "stepP50": 0.007400000000416185,
+      "stepP95": 0.6702999999997701,
+      "stepMax": 1.8010999999996784,
+      "engineMean": 0.07868150000003425,
+      "quality": {
+        "maxDrift": 0.02705125612707719,
+        "meanDrift": 0.013260956889099,
+        "topHeightRetained": 0.9986224052233573
+      }
+    },
+    {
+      "scene": "pyramid-20",
+      "sceneLabel": "Pyramid, 20 rows",
+      "bodies": 210,
+      "engine": "havok",
+      "sleep": true,
+      "buildMs": 7.139499999999316,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 0.4652938333333592,
+      "stepP50": 0.14440000000104192,
+      "stepP95": 1.1966999999986,
+      "stepMax": 1.9825000000000728,
+      "engineMean": 0.3437529999999727,
+      "quality": {
+        "maxDrift": 0.07415042886916487,
+        "meanDrift": 0.02131113746635011,
+        "topHeightRetained": 0.9984081952999799
+      }
+    },
+    {
+      "scene": "pyramid-20",
+      "sceneLabel": "Pyramid, 20 rows",
+      "bodies": 210,
+      "engine": "oimo",
+      "sleep": true,
+      "buildMs": 17.89810000000034,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 5.936059499999966,
+      "stepP50": 5.372000000001208,
+      "stepP95": 9.291699999999764,
+      "stepMax": 28.55789999999979,
+      "engineMean": 5.018034666666651,
+      "quality": {
+        "maxDrift": 0.13058679823351957,
+        "meanDrift": 0.042598025811247484,
+        "topHeightRetained": 0.9971771475673109
+      }
+    },
+    {
+      "scene": "pyramid-20",
+      "sceneLabel": "Pyramid, 20 rows",
+      "bodies": 210,
+      "engine": "box3d",
+      "sleep": false,
+      "buildMs": 4.699899999999616,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 0.601685833333322,
+      "stepP50": 0.5880999999990308,
+      "stepP95": 0.7437000000008993,
+      "stepMax": 1.6502000000000407,
+      "engineMean": 0.5807601666667324,
+      "quality": {
+        "maxDrift": 0.02715436037765554,
+        "meanDrift": 0.013338337796521445,
+        "topHeightRetained": 0.9986130151993189
+      }
+    },
+    {
+      "scene": "pyramid-20",
+      "sceneLabel": "Pyramid, 20 rows",
+      "bodies": 210,
+      "engine": "havok",
+      "sleep": false,
+      "buildMs": 6.5416000000004715,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 0.9329768333333778,
+      "stepP50": 0.865299999999479,
+      "stepP95": 1.3219999999982974,
+      "stepMax": 2.1347999999998137,
+      "engineMean": 0.7860970000000331,
+      "quality": {
+        "maxDrift": 0.1910115030220223,
+        "meanDrift": 0.02587993208095539,
+        "topHeightRetained": 0.9984805767352765
+      }
+    },
+    {
+      "scene": "pyramid-20",
+      "sceneLabel": "Pyramid, 20 rows",
+      "bodies": 210,
+      "engine": "oimo",
+      "sleep": false,
+      "buildMs": 14.108400000000984,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 5.8760586666668075,
+      "stepP50": 5.378100000001723,
+      "stepP95": 10.026000000001659,
+      "stepMax": 19.1804000000011,
+      "engineMean": 4.959415166666634,
+      "quality": {
+        "maxDrift": 15.83742826212478,
+        "meanDrift": 3.7765444573228337,
+        "topHeightRetained": 0.5360454682013003
+      }
+    },
+    {
+      "scene": "pyramid-50",
+      "sceneLabel": "Pyramid, 50 rows",
+      "bodies": 1275,
+      "engine": "box3d",
+      "sleep": true,
+      "buildMs": 20.725400000010268,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 0.8878880000003361,
+      "stepP50": 0.005399999994551763,
+      "stepP95": 4.6137000000017,
+      "stepMax": 10.903900000004796,
+      "engineMean": 0.8324941666665109,
+      "quality": {
+        "maxDrift": 0.17267828942261268,
+        "meanDrift": 0.08416360635552561,
+        "topHeightRetained": 0.9965625339084201
+      }
+    },
+    {
+      "scene": "pyramid-50",
+      "sceneLabel": "Pyramid, 50 rows",
+      "bodies": 1275,
+      "engine": "havok",
+      "sleep": true,
+      "buildMs": 36.4094000000041,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 7.04779133333342,
+      "stepP50": 6.990699999994831,
+      "stepP95": 9.105500000005122,
+      "stepMax": 13.574700000011944,
+      "engineMean": 5.436292666666705,
+      "quality": {
+        "maxDrift": 52.80031087783943,
+        "meanDrift": 10.1594287542175,
+        "topHeightRetained": 0.05047148405903518
+      }
+    },
+    {
+      "scene": "pyramid-50",
+      "sceneLabel": "Pyramid, 50 rows",
+      "bodies": 1275,
+      "engine": "oimo",
+      "sleep": true,
+      "buildMs": 68.82480000000214,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 69.39613883333337,
+      "stepP50": 62.40429999999469,
+      "stepP95": 111.04699999999139,
+      "stepMax": 196.38899999999558,
+      "engineMean": 59.276682666667185,
+      "quality": {
+        "maxDrift": 55.21742037617229,
+        "meanDrift": 17.491689871866395,
+        "topHeightRetained": 0.018992661478272825
+      }
+    },
+    {
+      "scene": "pyramid-50",
+      "sceneLabel": "Pyramid, 50 rows",
+      "bodies": 1275,
+      "engine": "box3d",
+      "sleep": false,
+      "buildMs": 24.3756000000285,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 4.717650000000091,
+      "stepP50": 4.598199999978533,
+      "stepP95": 5.994599999976344,
+      "stepMax": 12.875400000018999,
+      "engineMean": 4.471519166666452,
+      "quality": {
+        "maxDrift": 0.17347186682397908,
+        "meanDrift": 0.08433119964993238,
+        "topHeightRetained": 0.9965511283489189
+      }
+    },
+    {
+      "scene": "pyramid-50",
+      "sceneLabel": "Pyramid, 50 rows",
+      "bodies": 1275,
+      "engine": "havok",
+      "sleep": false,
+      "buildMs": 33.56640000001062,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 7.338669666667022,
+      "stepP50": 7.535700000007637,
+      "stepP95": 9.338799999997718,
+      "stepMax": 14.850799999985611,
+      "engineMean": 5.913155833333537,
+      "quality": {
+        "maxDrift": 52.80031087783943,
+        "meanDrift": 10.1594287542175,
+        "topHeightRetained": 0.05047148405903518
+      }
+    },
+    {
+      "scene": "pyramid-50",
+      "sceneLabel": "Pyramid, 50 rows",
+      "bodies": 1275,
+      "engine": "oimo",
+      "sleep": false,
+      "buildMs": 60.63999999995576,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 59.21047900000044,
+      "stepP50": 55.1308999999892,
+      "stepP95": 98.62559999997029,
+      "stepMax": 145.08169999998063,
+      "engineMean": 50.519352333333515,
+      "quality": {
+        "maxDrift": 55.21736489601686,
+        "meanDrift": 17.425565529116778,
+        "topHeightRetained": 0.02123689534975122
+      }
+    },
+    {
+      "scene": "pyramid-100",
+      "sceneLabel": "Pyramid, 100 rows",
+      "bodies": 5050,
+      "engine": "box3d",
+      "sleep": true,
+      "buildMs": 143.13709999999264,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 31.683434333332407,
+      "stepP50": 30.47980000003008,
+      "stepP95": 48.56899999995949,
+      "stepMax": 66.05330000002868,
+      "engineMean": 29.664889333333026,
+      "quality": {
+        "maxDrift": 0.6900644147453077,
+        "meanDrift": 0.33788084366707666,
+        "topHeightRetained": 0.9932002542006909
+      }
+    },
+    {
+      "scene": "pyramid-100",
+      "sceneLabel": "Pyramid, 100 rows",
+      "bodies": 5050,
+      "engine": "havok",
+      "sleep": true,
+      "buildMs": 159.55479999998352,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 29.880717166666486,
+      "stepP50": 30.692800000018906,
+      "stepP95": 38.66080000001239,
+      "stepMax": 51.411700000055134,
+      "engineMean": 22.588688166665086,
+      "quality": {
+        "maxDrift": 101.75700050535946,
+        "meanDrift": 33.81600455974835,
+        "topHeightRetained": 0.049340703379568744
+      }
+    },
+    {
+      "scene": "pyramid-100",
+      "sceneLabel": "Pyramid, 100 rows",
+      "bodies": 5050,
+      "engine": "oimo",
+      "sleep": true,
+      "buildMs": 241.40730000002077,
+      "stepsRequested": 600,
+      "stepsRun": 275,
+      "stoppedEarly": true,
+      "stepMean": 218.74031381818023,
+      "stepP50": 190.22259999997914,
+      "stepP95": 369.0573999999906,
+      "stepMax": 635.8878999999724,
+      "engineMean": 174.62778436363652,
+      "quality": {
+        "maxDrift": 58.589100149453046,
+        "meanDrift": 27.382714402544718,
+        "topHeightRetained": 1.0753525117661702
+      }
+    },
+    {
+      "scene": "pyramid-100",
+      "sceneLabel": "Pyramid, 100 rows",
+      "bodies": 5050,
+      "engine": "box3d",
+      "sleep": false,
+      "buildMs": 145.80180000001565,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 25.3602426666683,
+      "stepP50": 24.99970000004396,
+      "stepP95": 30.509399999980815,
+      "stepMax": 49.288500000024214,
+      "engineMean": 23.385149999998198,
+      "quality": {
+        "maxDrift": 0.6934606917196542,
+        "meanDrift": 0.3392004722105754,
+        "topHeightRetained": 0.9932014810380025
+      }
+    },
+    {
+      "scene": "pyramid-100",
+      "sceneLabel": "Pyramid, 100 rows",
+      "bodies": 5050,
+      "engine": "havok",
+      "sleep": false,
+      "buildMs": 196.7597999999998,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 29.230541999997026,
+      "stepP50": 30.169899999978952,
+      "stepP95": 37.307299999985844,
+      "stepMax": 49.38760000001639,
+      "engineMean": 22.088268499998765,
+      "quality": {
+        "maxDrift": 101.61746291245662,
+        "meanDrift": 33.815086546062126,
+        "topHeightRetained": 0.04930260912257822
+      }
+    },
+    {
+      "scene": "pyramid-100",
+      "sceneLabel": "Pyramid, 100 rows",
+      "bodies": 5050,
+      "engine": "oimo",
+      "sleep": false,
+      "buildMs": 259.9454999999725,
+      "stepsRequested": 600,
+      "stepsRun": 296,
+      "stoppedEarly": true,
+      "stepMean": 203.09349797297082,
+      "stepP50": 180.49170000001322,
+      "stepP95": 367.7986999999848,
+      "stepMax": 704.9146999999648,
+      "engineMean": 164.18673310810925,
+      "quality": {
+        "maxDrift": 66.85664468926173,
+        "meanDrift": 29.276508839003572,
+        "topHeightRetained": 1.0411870353093156
+      }
+    },
+    {
+      "scene": "pile-1000",
+      "sceneLabel": "Pile, 1000 boxes and spheres",
+      "bodies": 1000,
+      "engine": "box3d",
+      "sleep": true,
+      "buildMs": 18.17539999994915,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 3.450973666663631,
+      "stepP50": 3.220300000044517,
+      "stepP95": 4.946999999927357,
+      "stepMax": 17.585500000044703,
+      "engineMean": 3.2743510000002183,
+      "quality": {
+        "escaped": 0,
+        "pileHeight": 2.282003164291382
+      }
+    },
+    {
+      "scene": "pile-1000",
+      "sceneLabel": "Pile, 1000 boxes and spheres",
+      "bodies": 1000,
+      "engine": "havok",
+      "sleep": true,
+      "buildMs": 26.357199999969453,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 4.259911666663635,
+      "stepP50": 3.9860000000335276,
+      "stepP95": 5.905299999983981,
+      "stepMax": 14.61109999998007,
+      "engineMean": 3.211486333332141,
+      "quality": {
+        "escaped": 0,
+        "pileHeight": 2.308772563934326
+      }
+    },
+    {
+      "scene": "pile-1000",
+      "sceneLabel": "Pile, 1000 boxes and spheres",
+      "bodies": 1000,
+      "engine": "oimo",
+      "sleep": true,
+      "buildMs": 81.92819999996573,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 33.339808666665725,
+      "stepP50": 32.19149999995716,
+      "stepP95": 48.33010000002105,
+      "stepMax": 137.10640000004787,
+      "engineMean": 26.435569999998357,
+      "quality": {
+        "escaped": 0,
+        "pileHeight": 2.4593814651589634
+      }
+    },
+    {
+      "scene": "pile-1000",
+      "sceneLabel": "Pile, 1000 boxes and spheres",
+      "bodies": 1000,
+      "engine": "box3d",
+      "sleep": false,
+      "buildMs": 24.103800000040792,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 3.444140833335696,
+      "stepP50": 3.240899999975227,
+      "stepP95": 5.003000000026077,
+      "stepMax": 9.66960000002291,
+      "engineMean": 3.28480866666728,
+      "quality": {
+        "escaped": 0,
+        "pileHeight": 2.2817394733428955
+      }
+    },
+    {
+      "scene": "pile-1000",
+      "sceneLabel": "Pile, 1000 boxes and spheres",
+      "bodies": 1000,
+      "engine": "havok",
+      "sleep": false,
+      "buildMs": 30.37369999999646,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 4.571955499996742,
+      "stepP50": 4.444600000046194,
+      "stepP95": 6.1881999999750406,
+      "stepMax": 16.383900000015274,
+      "engineMean": 3.331531000000735,
+      "quality": {
+        "escaped": 0,
+        "pileHeight": 2.308772563934326
+      }
+    },
+    {
+      "scene": "pile-1000",
+      "sceneLabel": "Pile, 1000 boxes and spheres",
+      "bodies": 1000,
+      "engine": "oimo",
+      "sleep": false,
+      "buildMs": 71.66319999995176,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 33.57789616666637,
+      "stepP50": 32.60559999989346,
+      "stepP95": 46.741500000003725,
+      "stepMax": 133.811299999943,
+      "engineMean": 26.809477499998756,
+      "quality": {
+        "escaped": 0,
+        "pileHeight": 2.4348768046600378
+      }
+    },
+    {
+      "scene": "pile-4000",
+      "sceneLabel": "Pile, 4000 boxes and spheres",
+      "bodies": 4000,
+      "engine": "box3d",
+      "sleep": true,
+      "buildMs": 75.9364999999525,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 21.971457666665664,
+      "stepP50": 21.76260000001639,
+      "stepP95": 27.605199999990873,
+      "stepMax": 35.98939999996219,
+      "engineMean": 20.78572599999762,
+      "quality": {
+        "escaped": 0,
+        "pileHeight": 8.355522155761719
+      }
+    },
+    {
+      "scene": "pile-4000",
+      "sceneLabel": "Pile, 4000 boxes and spheres",
+      "bodies": 4000,
+      "engine": "havok",
+      "sleep": true,
+      "buildMs": 120.4926999999443,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 23.826315833335197,
+      "stepP50": 23.953300000051968,
+      "stepP95": 28.670399999944493,
+      "stepMax": 44.38019999989774,
+      "engineMean": 17.72085283333009,
+      "quality": {
+        "escaped": 0,
+        "pileHeight": 7.8578200340271
+      }
+    },
+    {
+      "scene": "pile-4000",
+      "sceneLabel": "Pile, 4000 boxes and spheres",
+      "bodies": 4000,
+      "engine": "oimo",
+      "sleep": true,
+      "buildMs": 220.07319999998435,
+      "stepsRequested": 600,
+      "stepsRun": 306,
+      "stoppedEarly": true,
+      "stepMean": 196.1994679738582,
+      "stepP50": 201.71869999996852,
+      "stepP95": 246.68349999992643,
+      "stepMax": 1231.983600000036,
+      "engineMean": 164.60841437908508,
+      "quality": {
+        "escaped": 0,
+        "pileHeight": 8.102429679598673
+      }
+    },
+    {
+      "scene": "pile-4000",
+      "sceneLabel": "Pile, 4000 boxes and spheres",
+      "bodies": 4000,
+      "engine": "box3d",
+      "sleep": false,
+      "buildMs": 75.47479999996722,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 21.606338333337725,
+      "stepP50": 21.056899999966845,
+      "stepP95": 28.832199999829754,
+      "stepMax": 51.32880000001751,
+      "engineMean": 20.246168499997584,
+      "quality": {
+        "escaped": 0,
+        "pileHeight": 8.355522155761719
+      }
+    },
+    {
+      "scene": "pile-4000",
+      "sceneLabel": "Pile, 4000 boxes and spheres",
+      "bodies": 4000,
+      "engine": "havok",
+      "sleep": false,
+      "buildMs": 144.3739999999525,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 24.41836233333277,
+      "stepP50": 24.771700000041164,
+      "stepP95": 29.868399999919347,
+      "stepMax": 41.50479999999516,
+      "engineMean": 18.144399833333832,
+      "quality": {
+        "escaped": 0,
+        "pileHeight": 7.8578200340271
+      }
+    },
+    {
+      "scene": "pile-4000",
+      "sceneLabel": "Pile, 4000 boxes and spheres",
+      "bodies": 4000,
+      "engine": "oimo",
+      "sleep": false,
+      "buildMs": 239.5291000000434,
+      "stepsRequested": 600,
+      "stepsRun": 307,
+      "stoppedEarly": true,
+      "stepMean": 195.77030162866598,
+      "stepP50": 201.9762000000337,
+      "stepP95": 249.62589999998454,
+      "stepMax": 1309.5039000000106,
+      "engineMean": 163.9442162866441,
+      "quality": {
+        "escaped": 0,
+        "pileHeight": 8.13389240674901
+      }
+    }
+  ]
+}
