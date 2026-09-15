@@ -810,13 +810,13 @@ BX_EXPORT void bx_DestroyBody( int slot )
 	{
 		return;
 	}
-	// b3DestroyBody destroys attached shapes and joints
+	// b3DestroyBody destroys attached shapes and joints; free the geometry only once no shape can refer to it
 	bxDestroyHelpers( body );
-	bxReleaseBodyShapes( body, 0 );
 	if ( b3Body_IsValid( body->id ) )
 	{
 		b3DestroyBody( body->id );
 	}
+	bxReleaseBodyShapes( body, 0 );
 	free( body->shapes );
 	free( body->shapeDescs );
 	free( body->geomDescs );
