@@ -8,6 +8,8 @@ import { Scene } from "@babylonjs/core/scene";
 import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { type PhysicsMassProperties, PhysicsMotionType } from "@babylonjs/core/Physics/v2/IPhysicsEnginePlugin";
 import { HavokPlugin } from "@babylonjs/core/Physics/v2/Plugins/havokPlugin";
+import { PhysicsBody } from "@babylonjs/core/Physics/v2/physicsBody";
+import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import HavokPhysics from "@babylonjs/havok";
 import { afterEach, describe, expect, it } from "vitest";
 import { CreateBoxBody, CreateWasmScene, type IWasmScene } from "./wasmScene";
@@ -129,6 +131,59 @@ describe("Box3D mass properties (real wasm)", () => {
         body.body.applyAngularImpulse(new Vector3(1, 0, 0));
         w.step(1);
         expect(body.body.getAngularVelocity().x).toBeCloseTo(0.25, 2);
+    });
+
+    it("diagonalizes a rotated inertia tensor exactly and rebuilds it unchanged", async () => {
+        world = await CreateWasmScene(Vector3.Zero());
+        const w = world;
+        // a box rotated 30 degrees inside its body: the tensor has off diagonal terms in body space
+        const rotation = Quaternion.RotationAxis(new Vector3(0, 0, 1), Math.PI / 6);
+        const rotated = CreateBoxBody(w.scene, "rotated", Vector3.Zero(), new Vector3(0.5, 1.5, 0.9), PhysicsMotionType.DYNAMIC, undefined, { shapeRotation: rotation });
+        // the same box without the shape rotation, well clear of the first one so they never touch
+        const upright = CreateBoxBody(w.scene, "upright", new Vector3(20, 0, 0), new Vector3(0.5, 1.5, 0.9), PhysicsMotionType.DYNAMIC);
+        const sorted = (v: Vector3) => v.asArray().slice().sort((a, b) => a - b);
+        // the same box has the same principal moments whatever the shape rotation; a decomposition that does not
+        // converge returns a permutation of the body space diagonal instead, which differs by ~20% here
+        const reference = sorted(upright.body.computeMassProperties().inertia!);
+        sorted(rotated.body.computeMassProperties().inertia!).forEach((value, i) => expect(value).toBeCloseTo(reference[i], 3));
+        // the reported orientation is the rotation that was applied, up to the box's own symmetry
+        const axis = new Vector3(0, 0, 1).applyRotationQuaternion(rotated.body.computeMassProperties().inertiaOrientation!);
+        expect(Math.abs(axis.z)).toBeGreaterThan(0.999);
+
+        // round trip: setMassProperties({ mass }) re-writes the tensor from the decomposition, so it must come back
+        // unchanged apart from the mass, which is what every Babylon Ragdoll box relies on
+        const before = rotated.body.getMassProperties();
+        rotated.body.setMassProperties({ mass: 7 });
+        const after = rotated.body.getMassProperties();
+        expect(after.mass).toBeCloseTo(7);
+        after.inertia!.asArray().forEach((value, i) => expect(value).toBeCloseTo(before.inertia!.asArray()[i], 4));
+        // an impulse about a principal axis produces rotation about that axis only. The body turns while it spins, so
+        // the axis has to be taken through its current orientation each time.
+        for (const index of [0, 1, 2]) {
+            const local = new Vector3(+(index === 0), +(index === 1), +(index === 2)).applyRotationQuaternion(after.inertiaOrientation!);
+            const world = local.applyRotationQuaternion(rotated.node.rotationQuaternion!);
+            rotated.body.setAngularVelocity(Vector3.Zero());
+            rotated.body.applyAngularImpulse(world.scale(2));
+            w.step(1);
+            const spin = rotated.body.getAngularVelocity().normalizeToNew();
+            expect(Math.abs(Vector3.Dot(spin, world.normalizeToNew())), `principal axis ${index}`).toBeGreaterThan(0.99);
+        }
+    });
+
+    it("reports the mass of a static or animated body from its shapes, like Havok", async () => {
+        world = await CreateWasmScene(Vector3.Zero());
+        const w = world;
+        for (const type of [PhysicsMotionType.STATIC, PhysicsMotionType.ANIMATED, PhysicsMotionType.DYNAMIC]) {
+            const body = CreateBoxBody(w.scene, `body${type}`, Vector3.Zero(), new Vector3(1, 1, 1), type);
+            // a 1 m box at the default density weighs 1000 kg; Havok reports that for every motion type, Box3D keeps
+            // mass 0 on static and kinematic bodies, so the plugin computes it from the shapes
+            expect(body.body.getMassProperties().mass).toBeCloseTo(1000, 0);
+            expect(body.body.computeMassProperties().mass).toBeCloseTo(1000, 0);
+            expect(body.body.getMassProperties().inertia!.x).toBeCloseTo(1 / 6, 2);
+        }
+        // a body with no shape weighs nothing rather than an invented 1 kg
+        const empty = new PhysicsBody(new TransformNode("empty", w.scene), PhysicsMotionType.STATIC, false, w.scene);
+        expect(empty.getMassProperties().mass).toBe(0);
     });
 
     it("reports the principal inertia of a rotated shape like Havok does", async () => {

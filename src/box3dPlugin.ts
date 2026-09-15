@@ -291,7 +291,10 @@ function DiagonalizeInertia(tensor: ArrayLike<number>, moments: Vector3, orienta
             return;
         }
         const jacobi = [0, 0, 0, 0];
-        jacobi[k] = sign * Math.sqrt((1 - c) / 2);
+        // d is transpose(r) * a * r and the step right multiplies q, so d becomes transpose(jacobi) * d * jacobi: the
+        // quaternion has to turn by -theta where the matrix form of the Jacobi rotation turns by +theta. With the other
+        // sign every sweep puts the off diagonal term straight back and the loop never converges.
+        jacobi[k] = -sign * Math.sqrt((1 - c) / 2);
         jacobi[3] = Math.sqrt(1 - jacobi[k] * jacobi[k]);
         // q = q * jacobi
         const [qx, qy, qz, qw] = q;
@@ -556,7 +559,12 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         }
 
         for (const joint of this._motorJoints) {
-            this._b3._bx_Joint_UpdateMotorFrame(joint);
+            // a joint whose bodies were destroyed is gone with them, drop it instead of holding the slot forever
+            if (this._b3._bx_Joint_IsValid(joint)) {
+                this._b3._bx_Joint_UpdateMotorFrame(joint);
+            } else {
+                this._motorJoints.delete(joint);
+            }
         }
 
         const deltaTime = this._useDeltaForWorldStep ? delta : this._fixedTimeStep;
@@ -669,6 +677,14 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         if (!matrixData) {
             return;
         }
+        const shape = body.shape?._pluginData as Box3DShapeData | undefined;
+        if (instancesCount > 8 && shape && this._bakesMeshCopies(shape)) {
+            this._warnOnce(
+                "instanced-mesh-child",
+                "a mesh inside a container has no local transform in Box3D, so every instance gets its own baked copy of the mesh data; " +
+                    "put the mesh on the body directly, or bake the offset into the mesh, to share it."
+            );
+        }
         this._createOrUpdateBodyInstances(body, motionType, matrixData, 0, instancesCount, false);
     }
 
@@ -685,8 +701,17 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
                 this._b3._bx_Body_SetTransform(data.slot, position.x, position.y, position.z, rotation.x, rotation.y, rotation.z, rotation.w);
             } else {
                 const data = this._createNativeBody(motionType, position, rotation, body.startAsleep);
-                if (body._pluginDataInstances.length) {
-                    data.userMassProps = body._pluginDataInstances[0].userMassProps;
+                const sibling = body._pluginDataInstances[0] as Box3DBodyData | undefined;
+                if (sibling) {
+                    // a new instance behaves like the ones already there: same mass properties, events and activation
+                    data.userMassProps = sibling.userMassProps;
+                    data.eventMask = sibling.eventMask;
+                    this._applyEventFlags(data);
+                    if (sibling.activation !== PhysicsActivationControl.SIMULATION_CONTROLLED) {
+                        data.activation = sibling.activation;
+                        this._applyNativeMotionType(data);
+                        this._b3._bx_Body_EnableSleep(data.slot, sibling.activation === PhysicsActivationControl.ALWAYS_ACTIVE ? 0 : 1);
+                    }
                 }
                 body._pluginDataInstances.push(data);
                 this._bodies[data.slot] = { body, index: i, data };
@@ -871,6 +896,15 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         );
     }
 
+    /** True when the shape puts a mesh inside a container, which Box3D can only do by baking a copy per body. */
+    private _bakesMeshCopies(data: Box3DShapeData, visited = new Set<Box3DShapeData>()): boolean {
+        if (visited.has(data)) {
+            return false;
+        }
+        visited.add(data);
+        return data.children.some((child) => child.type === PhysicsShapeType.MESH || this._bakesMeshCopies(child, visited));
+    }
+
     private _setBodyShape(data: Box3DBodyData, shape: Nullable<Box3DShapeData>): void {
         for (const existing of this._shapes) {
             existing?.users.delete(data);
@@ -982,7 +1016,12 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
      * body space.
      */
     private _readMassData(data: Box3DBodyData): PhysicsMassProperties {
-        this._b3._bx_Body_GetMassData(data.slot);
+        // Box3D keeps mass 0 on static and kinematic bodies; Havok reports what the shapes weigh whatever the type
+        if (data.motionType === PhysicsMotionType.DYNAMIC && data.activation !== PhysicsActivationControl.ALWAYS_INACTIVE) {
+            this._b3._bx_Body_GetMassData(data.slot);
+        } else {
+            this._b3._bx_Body_ComputeShapeMassData(data.slot);
+        }
         const s = this._scratch();
         const mass = s[0];
         const principal = new Vector3();
@@ -1003,7 +1042,9 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
     private _resolveMassProperties(data: Box3DBodyData): Required<PhysicsMassProperties> {
         const computed = this._readMassData(data);
         const user = data.userMassProps ?? {};
-        const mass = user.mass !== undefined && user.mass > 0 ? user.mass : computed.mass! > 0 ? computed.mass! : 1;
+        // no invented mass here: a body with no shapes really does weigh nothing, only the tensor written to Box3D
+        // needs a positive mass (see _internalUpdateMassProperties)
+        const mass = user.mass !== undefined && user.mass > 0 ? user.mass : computed.mass!;
         return {
             mass,
             centerOfMass: user.centerOfMass ?? computed.centerOfMass!,
@@ -1026,7 +1067,8 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
             return;
         }
         const props = this._resolveMassProperties(data);
-        const mass = props.mass;
+        // a dynamic body with no mass at all would ignore gravity and every impulse
+        const mass = props.mass > 0 ? props.mass : 1;
         const inertia = props.inertia;
         const orientation = props.inertiaOrientation;
         // Babylon's inertia is per unit mass and a zero component means infinite inertia about that principal axis.
@@ -2209,11 +2251,14 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
             if (motorChanged && state.motor !== PhysicsConstraintMotorType.NONE && !this._isPrimaryAxis(cdata, axis)) {
                 this._warnOnce(`axis-motor-${axis}`, `SIX_DOF: a motor on axis ${axis} has no effect with the Box3D joint this constraint maps to.`);
             }
+            const first = cdata.pairs[0];
+            if (first) {
+                // the rest length of a distance joint follows its limits, whether or not the joint is rebuilt
+                this._updateJointLength(cdata, constraint.options.maxDistance, first.parentData, first.childData);
+            }
             if (rebuild) {
-                const first = cdata.pairs[0];
                 if (first) {
                     this._buildFrames(cdata, constraint, first.parentData, first.childData);
-                    this._updateJointLength(cdata, constraint.options.maxDistance, first.parentData, first.childData);
                 }
                 this._recreateJoints(cdata);
                 return;

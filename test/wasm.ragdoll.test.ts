@@ -7,7 +7,7 @@ import { NullEngine } from "@babylonjs/core/Engines/nullEngine";
 import { Scene } from "@babylonjs/core/scene";
 import { HavokPlugin } from "@babylonjs/core/Physics/v2/Plugins/havokPlugin";
 import HavokPhysics from "@babylonjs/havok";
-import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { PhysicsConstraintAxis, PhysicsMotionType, PhysicsPrestepType } from "@babylonjs/core/Physics/v2/IPhysicsEnginePlugin";
 import { Physics6DoFConstraint, type Physics6DoFLimit } from "@babylonjs/core/Physics/v2/physicsConstraint";
 import { describe, expect, it } from "vitest";
@@ -24,6 +24,8 @@ interface IBone {
     mass: number;
     /** twist (ANGULAR_X), swing 1 (ANGULAR_Y) and swing 2 (ANGULAR_Z) ranges in degrees */
     limits: [number, number, number, number, number, number];
+    /** the box is rotated onto its bone inside the body, like ZombieBlaster's fitted hitboxes: degrees about z */
+    tilt: number;
 }
 
 const cone = (swing: number, twist: number): [number, number, number, number, number, number] => [-twist, twist, -swing, swing, -swing, swing];
@@ -32,8 +34,17 @@ const hinge = (min: number, max: number): [number, number, number, number, numbe
 /** Roughly human, 1.80 m from the floor to the top of the head, arms hanging at the sides. */
 function BuildSkeleton(): IBone[] {
     const bones: IBone[] = [];
-    const add = (name: string, parent: string | null, origin: number[], extents: number[], center: number[], mass: number, limits: IBone["limits"]) =>
-        bones.push({ name, parent, origin: new Vector3(...(origin as [number, number, number])), extents: new Vector3(...(extents as [number, number, number])), center: new Vector3(...(center as [number, number, number])), mass, limits });
+    const add = (name: string, parent: string | null, origin: number[], extents: number[], center: number[], mass: number, limits: IBone["limits"], tilt = 0) =>
+        bones.push({
+            name,
+            parent,
+            origin: new Vector3(...(origin as [number, number, number])),
+            extents: new Vector3(...(extents as [number, number, number])),
+            center: new Vector3(...(center as [number, number, number])),
+            mass,
+            limits,
+            tilt,
+        });
     add("Hips", null, [0, 1.0, 0], [0.335, 0.22, 0.18], [0, 0, 0], 12, cone(0, 0));
     add("Spine02", "Hips", [0, 1.11, 0], [0.27, 0.185, 0.17], [0, 0.0925, 0], 8, cone(22, 15));
     add("Spine01", "Spine02", [0, 1.295, 0], [0.3, 0.125, 0.19], [0, 0.0625, 0], 8, cone(20, 15));
@@ -44,11 +55,12 @@ function BuildSkeleton(): IBone[] {
         ["Left", 1],
         ["Right", -1],
     ] as Array<[string, number]>) {
-        add(`${side}Arm`, "Spine", [sign * 0.26, 1.5, 0], [0.095, 0.28, 0.095], [0, -0.14, 0], 2.5, cone(85, 55));
-        add(`${side}ForeArm`, `${side}Arm`, [sign * 0.26, 1.22, 0], [0.075, 0.26, 0.075], [0, -0.13, 0], 1.5, hinge(-145, 0));
-        add(`${side}Hand`, `${side}ForeArm`, [sign * 0.26, 0.96, 0], [0.075, 0.17, 0.045], [0, -0.085, 0], 0.5, cone(45, 25));
-        add(`${side}UpLeg`, "Hips", [sign * 0.1, 0.92, 0], [0.135, 0.42, 0.135], [0, -0.21, 0], 8, cone(60, 30));
-        add(`${side}Leg`, `${side}UpLeg`, [sign * 0.1, 0.5, 0], [0.11, 0.42, 0.11], [0, -0.21, 0], 4, hinge(0, 140));
+        // the limb boxes are rotated onto their bones inside the body, so their inertia tensors are not diagonal
+        add(`${side}Arm`, "Spine", [sign * 0.26, 1.5, 0], [0.095, 0.28, 0.095], [0, -0.14, 0], 2.5, cone(85, 55), sign * 10);
+        add(`${side}ForeArm`, `${side}Arm`, [sign * 0.26, 1.22, 0], [0.075, 0.26, 0.075], [0, -0.13, 0], 1.5, hinge(-145, 0), sign * 8);
+        add(`${side}Hand`, `${side}ForeArm`, [sign * 0.26, 0.96, 0], [0.075, 0.17, 0.045], [0, -0.085, 0], 0.5, cone(45, 25), sign * 6);
+        add(`${side}UpLeg`, "Hips", [sign * 0.1, 0.92, 0], [0.135, 0.42, 0.135], [0, -0.21, 0], 8, cone(60, 30), -sign * 6);
+        add(`${side}Leg`, `${side}UpLeg`, [sign * 0.1, 0.5, 0], [0.11, 0.42, 0.11], [0, -0.21, 0], 4, hinge(0, 140), -sign * 4);
         add(`${side}Foot`, `${side}Leg`, [sign * 0.1, 0.08, 0], [0.09, 0.08, 0.24], [0, -0.04, 0.06], 1, cone(30, 15));
     }
     return bones;
@@ -117,7 +129,7 @@ async function CreateHavokWorld(gravity: Vector3) {
  * viaAnimated mirrors Babylon's Ragdoll going limp: the bodies track the animation as ANIMATED bodies with their joints
  * disabled, then the joints are enabled, the bodies become DYNAMIC and the killing impulse lands, all in one frame.
  */
-async function RunRagdoll(engineName: "box3d" | "havok", subStepCount: number, measure = true, viaAnimated = false): Promise<IRagdollStats> {
+async function RunRagdoll(engineName: "box3d" | "havok", subStepCount: number, measure = true, viaAnimated = false, tilted = false): Promise<IRagdollStats> {
     const world = engineName === "box3d" ? await CreateWasmScene(new Vector3(0, -9.81, 0), subStepCount) : await CreateHavokWorld(new Vector3(0, -9.81, 0));
     const { scene, b3, step } = world;
     try {
@@ -127,6 +139,7 @@ async function RunRagdoll(engineName: "box3d" | "havok", subStepCount: number, m
         for (const bone of bones) {
             const body = CreateBoxBody(scene, bone.name, bone.origin, bone.extents, viaAnimated ? PhysicsMotionType.ANIMATED : PhysicsMotionType.DYNAMIC, bone.mass, {
                 shapeCenter: bone.center,
+                shapeRotation: tilted && bone.tilt ? Quaternion.RotationAxis(new Vector3(0, 0, 1), bone.tilt * DegToRad) : undefined,
             });
             if (viaAnimated) {
                 body.body.setPrestepType(PhysicsPrestepType.TELEPORT);
@@ -338,5 +351,24 @@ describe("Zombie ragdoll (real wasm)", () => {
         expect(stats.worstLimitExcessDeg).toBeLessThan(10);
         expect(stats.asleep || stats.finalMaxSpeed < 0.05).toBe(true);
         expect(stats.lowestBodyY).toBeGreaterThan(-0.1);
+    });
+
+    it("holds together with the boxes rotated onto their bones, as a fitted ragdoll has them", async () => {
+        // ZombieBlaster rotates every hitbox onto its bone, so the body space inertia tensors are not diagonal and the
+        // plugin has to decompose and rebuild them. Box3D settles this arrangement less completely than the aligned
+        // one: light limbs keep creeping at a few centimetres per second instead of going to sleep.
+        for (const subStepCount of [4, 8]) {
+            const stats = await RunRagdoll("box3d", subStepCount, true, false, true);
+            console.log(
+                `tilted boxes, subSteps ${subStepCount}: peak ${stats.maxSpeed.toFixed(2)} m/s, final ${stats.finalMaxSpeed.toFixed(4)} m/s, ` +
+                    `asleep ${stats.asleep}, limit excess ${stats.worstLimitExcessDeg.toFixed(2)} deg after 0.1 s (${stats.worstLimitJoint}), ` +
+                    `${stats.firstStepsLimitExcessDeg.toFixed(1)} deg while absorbing the impulse, lowest body y ${stats.lowestBodyY.toFixed(3)}`
+            );
+            expect(stats.nan).toBe(false);
+            expect(stats.maxSpeedAfterSettling).toBeLessThan(30);
+            expect(stats.worstLimitExcessDeg).toBeLessThan(15);
+            expect(stats.finalMaxSpeed).toBeLessThan(0.15);
+            expect(stats.lowestBodyY).toBeGreaterThan(-0.1);
+        }
     });
 });

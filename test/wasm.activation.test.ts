@@ -1,6 +1,9 @@
 // Sleeping, activation control and waking against the real Box3D wasm.
 
-import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { Matrix, Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
+import { PhysicsBody } from "@babylonjs/core/Physics/v2/physicsBody";
+import { PhysicsShapeBox } from "@babylonjs/core/Physics/v2/physicsShape";
 import { PhysicsActivationControl, PhysicsMotionType, PhysicsPrestepType } from "@babylonjs/core/Physics/v2/IPhysicsEnginePlugin";
 import { afterEach, describe, expect, it } from "vitest";
 import { CreateBoxBody, CreateWasmScene, type IWasmScene } from "./wasmScene";
@@ -96,6 +99,37 @@ describe("Box3D activation (real wasm)", () => {
         parked.body.applyImpulse(new Vector3(0, -1, 0), parked.node.position);
         w.step(60);
         expect(parked.node.position.y).toBeLessThan(2);
+    });
+
+    it("gives thin instances added later the same events and activation as their siblings", async () => {
+        world = await CreateWasmScene();
+        const w = world;
+        const mesh = MeshBuilder.CreateBox("instances", { size: 1 }, w.scene);
+        // NullEngine has no vertex buffers, so the thin instance storage the plugin reads is filled in directly
+        const matrices = new Float32Array(16 * 6);
+        for (let i = 0; i < 6; i++) {
+            Matrix.Translation(i * 3, 5, 0).copyToArray(matrices, i * 16);
+        }
+        const storage = (mesh as any)._thinInstanceDataStorage;
+        storage.matrixData = matrices;
+        storage.instancesCount = 4;
+        Object.defineProperty(mesh, "hasThinInstances", { get: () => true });
+        const body = new PhysicsBody(mesh, PhysicsMotionType.DYNAMIC, true, w.scene);
+        body.shape = new PhysicsShapeBox(Vector3.Zero(), Quaternion.Identity(), new Vector3(1, 1, 1), w.scene);
+        body.setCollisionCallbackEnabled(true);
+        w.plugin.setActivationControl(body, PhysicsActivationControl.ALWAYS_ACTIVE);
+        // shim event flags: bit 1 begin/end touch, bit 2 hit events
+        const flags = () => (body as any)._pluginDataInstances.map((data: any) => w.b3._bx_Body_GetEventFlags(data.slot));
+        expect(flags()).toEqual([3, 3, 3, 3]);
+
+        // two more instances: they have to behave like the ones already there
+        storage.instancesCount = 6;
+        body.updateBodyInstances();
+        expect(flags()).toEqual([3, 3, 3, 3, 3, 3]);
+        expect((body as any)._pluginDataInstances.every((data: any) => data.eventMask === 7)).toBe(true);
+        // ALWAYS_ACTIVE means sleeping is off for every instance, the new ones included
+        w.step(400);
+        expect((body as any)._pluginDataInstances.every((data: any) => w.b3._bx_Body_IsAwake(data.slot) === 1)).toBe(true);
     });
 
     it("never sleeps with ALWAYS_ACTIVE and sleeps again under simulation control", async () => {

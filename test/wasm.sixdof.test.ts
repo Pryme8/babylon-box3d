@@ -275,6 +275,28 @@ describe("SIX_DOF constraints (real Box3D wasm)", () => {
         expect(twist.max).toBeLessThan(24);
     });
 
+    it("follows the limits when a distance constraint turns into a spring at runtime", async () => {
+        const world = await CreateWasmScene(Vector3.Zero());
+        rigs.push({ dispose: world.dispose } as IJointRig);
+        const anchor = CreateBoxBody(world.scene, "anchor", Vector3.Zero(), new Vector3(0.1, 0.1, 0.1), PhysicsMotionType.STATIC);
+        const bob = CreateBoxBody(world.scene, "bob", new Vector3(2, 0, 0), new Vector3(0.1, 0.1, 0.1), PhysicsMotionType.DYNAMIC, 1);
+        // a rope between 0.5 m and 3 m to begin with, so the bob hangs free where it is
+        const constraint = new Physics6DoFConstraint(
+            { pivotA: Vector3.Zero(), pivotB: Vector3.Zero(), axisA: Right, axisB: Right, perpAxisA: Up, perpAxisB: Up },
+            [{ axis: PhysicsConstraintAxis.LINEAR_DISTANCE, minLimit: 0.5, maxLimit: 3, stiffness: 60, damping: 4 }],
+            world.scene
+        );
+        anchor.body.addConstraint(bob.body, constraint);
+        world.step(60);
+        expect(bob.node.position.x).toBeCloseTo(2, 1);
+        // tightening it to a single length makes the plan a real spring, which has to rest at the new length rather
+        // than at the one the joint was built with
+        constraint.setAxisMinLimit(PhysicsConstraintAxis.LINEAR_DISTANCE, 1.2);
+        constraint.setAxisMaxLimit(PhysicsConstraintAxis.LINEAR_DISTANCE, 1.2);
+        world.step(600);
+        expect(bob.node.position.x).toBeCloseTo(1.2, 1);
+    });
+
     it("maps a SpringConstraint to a Box3D distance spring with Havok's spring constant", async () => {
         const world = await CreateWasmScene(Vector3.Zero());
         rigs.push({ dispose: world.dispose } as IJointRig);
