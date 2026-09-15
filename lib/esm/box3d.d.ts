@@ -46,6 +46,8 @@ export interface Box3DExports {
     _bx_World_SetContactTuning(world: number, hertz: number, dampingRatio: number, contactSpeed: number): void;
     _bx_World_Explode(world: number, px: number, py: number, pz: number, radius: number, falloff: number, impulsePerArea: number): void;
     _bx_World_GetAwakeBodyCount(world: number): number;
+    /** Joint force/torque threshold events from the last step (0 with the default thresholds). */
+    _bx_World_GetJointEventCount(world: number): number;
     /** scratch: [bodyCount, shapeCount, contactCount, jointCount, islandCount, stepMs, collideMs, solveMs] */
     _bx_World_GetStats(world: number): void;
 

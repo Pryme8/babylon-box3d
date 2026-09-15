@@ -466,6 +466,14 @@ BX_EXPORT int bx_World_GetAwakeBodyCount( int w )
 	return B3_IS_NON_NULL( worldId ) ? b3World_GetAwakeBodyCount( worldId ) : 0;
 }
 
+/// Number of joint force/torque threshold events from the last step. The plugin does not consume them; with the
+/// default thresholds (FLT_MAX) this stays 0.
+BX_EXPORT int bx_World_GetJointEventCount( int w )
+{
+	b3WorldId worldId = bxGetWorld( w );
+	return B3_IS_NON_NULL( worldId ) ? b3World_GetJointEvents( worldId ).count : 0;
+}
+
 /// scratch: [bodyCount, shapeCount, contactCount, jointCount, islandCount, stepMs, collideMs, solveMs]
 BX_EXPORT void bx_World_GetStats( int w )
 {
@@ -1777,6 +1785,19 @@ typedef enum bxJointType
 /// steeringHertz, steeringDamping, targetSteering, maxSteeringTorque, enableSteeringLimit, lowerSteering, upperSteering.
 /// Parallel joints read [hertz, dampingRatio, maxTorque] from scratch[14..].
 /// Returns the joint slot, 0 on failure.
+// Fills the shared part of a joint definition. The definition must come from its b3Default*JointDef function so every
+// field not set here keeps Box3D's default. In particular the force and torque thresholds default to FLT_MAX: a zeroed
+// definition sets them to 0, which makes Box3D compute reaction forces and emit a joint event for every awake joint
+// on every step.
+static void bxFillJointBase( b3JointDef* base, bxBody* bodyA, bxBody* bodyB, int collideConnected )
+{
+	base->bodyIdA = bodyA->id;
+	base->bodyIdB = bodyB->id;
+	base->localFrameA = bxTransform( s_scratch[0], s_scratch[1], s_scratch[2], s_scratch[3], s_scratch[4], s_scratch[5], s_scratch[6] );
+	base->localFrameB = bxTransform( s_scratch[7], s_scratch[8], s_scratch[9], s_scratch[10], s_scratch[11], s_scratch[12], s_scratch[13] );
+	base->collideConnected = collideConnected != 0;
+}
+
 BX_EXPORT int bx_CreateJoint( int w, int type, int bodyASlot, int bodyBSlot, int collideConnected, float param )
 {
 	b3WorldId worldId = bxGetWorld( w );
@@ -1787,68 +1808,41 @@ BX_EXPORT int bx_CreateJoint( int w, int type, int bodyASlot, int bodyBSlot, int
 		return 0;
 	}
 
-	b3JointDef base = { 0 };
-	base.bodyIdA = bodyA->id;
-	base.bodyIdB = bodyB->id;
-	base.localFrameA = bxTransform( s_scratch[0], s_scratch[1], s_scratch[2], s_scratch[3], s_scratch[4], s_scratch[5], s_scratch[6] );
-	base.localFrameB = bxTransform( s_scratch[7], s_scratch[8], s_scratch[9], s_scratch[10], s_scratch[11], s_scratch[12], s_scratch[13] );
-	base.collideConnected = collideConnected != 0;
-
 	b3JointId jointId = b3_nullJointId;
 	switch ( type )
 	{
 		case bx_weldJoint:
 		{
 			b3WeldJointDef def = b3DefaultWeldJointDef();
-			base.constraintHertz = def.base.constraintHertz;
-			base.constraintDampingRatio = def.base.constraintDampingRatio;
-			base.drawScale = def.base.drawScale;
-			base.internalValue = def.base.internalValue;
-			def.base = base;
+			bxFillJointBase( &def.base, bodyA, bodyB, collideConnected );
 			jointId = b3CreateWeldJoint( worldId, &def );
 			break;
 		}
 		case bx_sphericalJoint:
 		{
 			b3SphericalJointDef def = b3DefaultSphericalJointDef();
-			base.constraintHertz = def.base.constraintHertz;
-			base.constraintDampingRatio = def.base.constraintDampingRatio;
-			base.drawScale = def.base.drawScale;
-			base.internalValue = def.base.internalValue;
-			def.base = base;
+			bxFillJointBase( &def.base, bodyA, bodyB, collideConnected );
 			jointId = b3CreateSphericalJoint( worldId, &def );
 			break;
 		}
 		case bx_revoluteJoint:
 		{
 			b3RevoluteJointDef def = b3DefaultRevoluteJointDef();
-			base.constraintHertz = def.base.constraintHertz;
-			base.constraintDampingRatio = def.base.constraintDampingRatio;
-			base.drawScale = def.base.drawScale;
-			base.internalValue = def.base.internalValue;
-			def.base = base;
+			bxFillJointBase( &def.base, bodyA, bodyB, collideConnected );
 			jointId = b3CreateRevoluteJoint( worldId, &def );
 			break;
 		}
 		case bx_prismaticJoint:
 		{
 			b3PrismaticJointDef def = b3DefaultPrismaticJointDef();
-			base.constraintHertz = def.base.constraintHertz;
-			base.constraintDampingRatio = def.base.constraintDampingRatio;
-			base.drawScale = def.base.drawScale;
-			base.internalValue = def.base.internalValue;
-			def.base = base;
+			bxFillJointBase( &def.base, bodyA, bodyB, collideConnected );
 			jointId = b3CreatePrismaticJoint( worldId, &def );
 			break;
 		}
 		case bx_distanceJoint:
 		{
 			b3DistanceJointDef def = b3DefaultDistanceJointDef();
-			base.constraintHertz = def.base.constraintHertz;
-			base.constraintDampingRatio = def.base.constraintDampingRatio;
-			base.drawScale = def.base.drawScale;
-			base.internalValue = def.base.internalValue;
-			def.base = base;
+			bxFillJointBase( &def.base, bodyA, bodyB, collideConnected );
 			def.length = param;
 			def.enableLimit = true;
 			def.minLength = param;
@@ -1859,11 +1853,7 @@ BX_EXPORT int bx_CreateJoint( int w, int type, int bodyASlot, int bodyBSlot, int
 		case bx_wheelJoint:
 		{
 			b3WheelJointDef def = b3DefaultWheelJointDef();
-			base.constraintHertz = def.base.constraintHertz;
-			base.constraintDampingRatio = def.base.constraintDampingRatio;
-			base.drawScale = def.base.drawScale;
-			base.internalValue = def.base.internalValue;
-			def.base = base;
+			bxFillJointBase( &def.base, bodyA, bodyB, collideConnected );
 			const float* p = s_scratch + 14;
 			def.enableSuspensionSpring = p[0] != 0.0f;
 			def.suspensionHertz = p[1];
@@ -1888,11 +1878,7 @@ BX_EXPORT int bx_CreateJoint( int w, int type, int bodyASlot, int bodyBSlot, int
 		case bx_parallelJoint:
 		{
 			b3ParallelJointDef def = b3DefaultParallelJointDef();
-			base.constraintHertz = def.base.constraintHertz;
-			base.constraintDampingRatio = def.base.constraintDampingRatio;
-			base.drawScale = def.base.drawScale;
-			base.internalValue = def.base.internalValue;
-			def.base = base;
+			bxFillJointBase( &def.base, bodyA, bodyB, collideConnected );
 			def.hertz = s_scratch[14];
 			def.dampingRatio = s_scratch[15];
 			def.maxTorque = s_scratch[16];
@@ -1902,11 +1888,7 @@ BX_EXPORT int bx_CreateJoint( int w, int type, int bodyASlot, int bodyBSlot, int
 		case bx_filterJoint:
 		{
 			b3FilterJointDef def = b3DefaultFilterJointDef();
-			base.constraintHertz = def.base.constraintHertz;
-			base.constraintDampingRatio = def.base.constraintDampingRatio;
-			base.drawScale = def.base.drawScale;
-			base.internalValue = def.base.internalValue;
-			def.base = base;
+			bxFillJointBase( &def.base, bodyA, bodyB, collideConnected );
 			jointId = b3CreateFilterJoint( worldId, &def );
 			break;
 		}
