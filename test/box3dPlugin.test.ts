@@ -61,10 +61,13 @@ function createModule() {
         _bx_Body_EnableContactEvents: vi.fn(),
         _bx_Body_SetEventFlags: vi.fn(),
         _bx_Body_ApplyMassFromShapes: vi.fn(),
+        // [mass, cx, cy, cz, ixx, iyy, izz, ixy, ixz, iyz]
         _bx_Body_GetMassData: vi.fn((slot: number) => {
-            scratch.set(massData.get(slot) ?? [10, 0, 0, 0, 2, 2, 2]);
+            scratch.set(massData.get(slot) ?? [10, 0, 0, 0, 2, 2, 2, 0, 0, 0]);
         }),
         _bx_Body_SetMassData: vi.fn(),
+        _bx_Body_SetMassDataFull: vi.fn(),
+        _bx_Body_SetMotionLocks: vi.fn(),
         _bx_Body_GetTransform: vi.fn(() => scratch.set([1, 2, 3, 0, 0, 0, 1])),
         _bx_Body_SetTransform: vi.fn(),
         _bx_ShapeDesc_CreateSphere: vi.fn(() => nextDesc++),
@@ -158,10 +161,19 @@ describe("Box3DPlugin bodies and shapes", () => {
         plugin.setShape(body, shape);
         expect(mod.b3._bx_Body_SetShape).toHaveBeenCalledExactlyOnceWith(slot, shape._pluginData.slot);
 
-        // the shape derived mass is 10 with a diagonal inertia of 2, asking for 5 halves the inertia
-        mod.setMassData(slot, [10, 0, 0, 0, 2, 2, 2]);
+        // the shape derived mass is 10 with a diagonal inertia of 2 (0.2 per unit mass), asking for 5 halves the tensor
+        mod.setMassData(slot, [10, 0, 0, 0, 2, 2, 2, 0, 0, 0]);
         plugin.setMassProperties(body, { mass: 5 });
-        expect(mod.b3._bx_Body_SetMassData).toHaveBeenLastCalledWith(slot, 5, 0, 0, 0, 1, 1, 1);
+        expect(mod.b3._bx_Body_SetMassDataFull).toHaveBeenLastCalledWith(slot, 5, 0, 0, 0, 1, 1, 1, 0, 0, 0);
+
+        // a zero inertia component locks that axis: Box3D gets a very large moment and world space motion locks
+        plugin.setMassProperties(body, { mass: 5, inertia: new Vector3(0, 1, 0) });
+        const call = mod.b3._bx_Body_SetMassDataFull.mock.lastCall!;
+        expect(call.slice(0, 5)).toEqual([slot, 5, 0, 0, 0]);
+        expect(call[5]).toBeGreaterThan(1e4);
+        expect(call[6]).toBeCloseTo(5);
+        expect(call[7]).toBeGreaterThan(1e4);
+        expect(mod.b3._bx_Body_SetMotionLocks).toHaveBeenLastCalledWith(slot, 0, 0, 0, 1, 0, 1);
     });
 
     it("destroys the native body and forgets it on dispose", () => {

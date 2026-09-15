@@ -49,6 +49,12 @@ The wasm is fetched next to the loader script. With a bundler pass `locateFile`,
 | `TRIGGER_ENTERED` / `EXITED` | sensor events |
 | thin instances | one Box3D body per instance |
 
+`PhysicsMassProperties` follows Havok: `inertia` is the principal moments **per unit mass** (so setting only `mass`
+scales the shape's inertia with it), `inertiaOrientation` rotates those principal axes into body space, and a zero
+component means infinite inertia about that axis. Box3D needs an invertible tensor, so a locked axis gets a moment
+100000 times the largest free one, and when the remaining free axis is world aligned (the usual `inertia (0, 1, 0)`
+upright character) Box3D's own motion locks are added on top, which makes it exact.
+
 Event masks use Havok's bits (1 started, 2 continued, 4 finished) and only enable what they ask for: started and
 finished map to Box3D's begin/end touch events, continued to its hit events, so bodies that only want one kind (every
 body of a Babylon `Ragdoll`, for instance) do not pay for the others.

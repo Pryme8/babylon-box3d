@@ -94,9 +94,25 @@ export interface Box3DExports {
     _bx_Body_SetMotionLocks(body: number, lx: number, ly: number, lz: number, ax: number, ay: number, az: number): void;
     /** scratch: [minx, miny, minz, maxx, maxy, maxz] */
     _bx_Body_GetAABB(body: number): void;
-    /** scratch: [mass, cx, cy, cz, ixx, iyy, izz] */
+    /** scratch: [mass, cx, cy, cz, ixx, iyy, izz, ixy, ixz, iyz] */
     _bx_Body_GetMassData(body: number): void;
     _bx_Body_SetMassData(body: number, mass: number, cx: number, cy: number, cz: number, ixx: number, iyy: number, izz: number): void;
+    /** Full symmetric inertia tensor about the center of mass. */
+    _bx_Body_SetMassDataFull(
+        body: number,
+        mass: number,
+        cx: number,
+        cy: number,
+        cz: number,
+        ixx: number,
+        iyy: number,
+        izz: number,
+        ixy: number,
+        ixz: number,
+        iyz: number
+    ): void;
+    /** scratch: [lx, ly, lz, ax, ay, az], 1 where the motion is locked */
+    _bx_Body_GetMotionLocks(body: number): void;
     _bx_Body_ApplyMassFromShapes(body: number): void;
     _bx_Body_GetShapeCount(body: number): number;
     /** Begin/end touch events and hit events on the body's shapes, enabled separately. */

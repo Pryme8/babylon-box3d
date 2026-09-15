@@ -39,6 +39,8 @@ class Box3DBodyData {
         public slot: number
     ) {}
     public userMassProps: PhysicsMassProperties = {};
+    /** Box3D angular motion locks currently set on the body, bits x, y, z */
+    public angularLocks = 0;
     /** Havok's EventType bits: 1 collision started, 2 collision continued, 4 collision finished */
     public eventMask = 0;
     public motionType = PhysicsMotionType.STATIC;
@@ -233,6 +235,85 @@ const enum Box3DEventBits {
     COLLISION_CONTINUED = 2,
     COLLISION_FINISHED = 4,
     ALL = 7,
+}
+
+/**
+ * How much heavier a locked rotation axis is made than the heaviest free one. Babylon locks an axis with a zero inertia
+ * component, Box3D needs an invertible tensor; 1e5 leaves a body a hundred thousand times harder to turn about that axis
+ * while the tensor stays well conditioned in float32.
+ */
+const LockedInertiaRatio = 1e5;
+
+/**
+ * Diagonalizes a symmetric inertia tensor [ixx, iyy, izz, ixy, ixz, iyz] into its principal moments and the rotation
+ * that turns principal axes into body axes (Babylon's inertiaOrientation). Jacobi rotations, a few sweeps are plenty for
+ * a 3x3, and the common diagonal case exits immediately.
+ */
+function DiagonalizeInertia(tensor: ArrayLike<number>, moments: Vector3, orientation: Quaternion): void {
+    const a = [
+        [tensor[0], tensor[3], tensor[4]],
+        [tensor[3], tensor[1], tensor[5]],
+        [tensor[4], tensor[5], tensor[2]],
+    ];
+    orientation.set(0, 0, 0, 1);
+    moments.set(tensor[0], tensor[1], tensor[2]);
+    const q = [0, 0, 0, 1];
+    for (let sweep = 0; sweep < 24; sweep++) {
+        // rotation matrix of q, columns are the current principal axes
+        const [x, y, z, w] = q;
+        const r = [
+            [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+            [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+            [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ];
+        // d = transpose(r) * a * r
+        const d = [0, 1, 2].map((i) => [0, 1, 2].map((j) => [0, 1, 2].reduce((sum, k) => sum + r[k][i] * [0, 1, 2].reduce((s2, l) => s2 + a[k][l] * r[l][j], 0), 0)));
+        moments.set(d[0][0], d[1][1], d[2][2]);
+        orientation.set(q[0], q[1], q[2], q[3]);
+        const offDiagonal = [Math.abs(d[1][2]), Math.abs(d[0][2]), Math.abs(d[0][1])];
+        const k = offDiagonal.indexOf(Math.max(...offDiagonal));
+        const k1 = (k + 1) % 3;
+        const k2 = (k + 2) % 3;
+        const off = d[k1][k2];
+        const scale = Math.abs(d[0][0]) + Math.abs(d[1][1]) + Math.abs(d[2][2]) + 1e-30;
+        if (Math.abs(off) <= 1e-9 * scale) {
+            return;
+        }
+        let theta = (d[k2][k2] - d[k1][k1]) / (2 * off);
+        const sign = theta > 0 ? 1 : -1;
+        theta *= sign;
+        const t = sign / (theta + (theta < 1e6 ? Math.sqrt(theta * theta + 1) : theta));
+        const c = 1 / Math.sqrt(t * t + 1);
+        if (c === 1) {
+            return;
+        }
+        const jacobi = [0, 0, 0, 0];
+        jacobi[k] = sign * Math.sqrt((1 - c) / 2);
+        jacobi[3] = Math.sqrt(1 - jacobi[k] * jacobi[k]);
+        // q = q * jacobi
+        const [qx, qy, qz, qw] = q;
+        const [jx, jy, jz, jw] = jacobi;
+        q[0] = qw * jx + qx * jw + qy * jz - qz * jy;
+        q[1] = qw * jy - qx * jz + qy * jw + qz * jx;
+        q[2] = qw * jz + qx * jy - qy * jx + qz * jw;
+        q[3] = qw * jw - qx * jx - qy * jy - qz * jz;
+        const length = Math.hypot(q[0], q[1], q[2], q[3]) || 1;
+        for (let i = 0; i < 4; i++) {
+            q[i] /= length;
+        }
+    }
+}
+
+/** Builds the symmetric tensor [ixx, iyy, izz, ixy, ixz, iyz] of principal moments rotated into body space. */
+function ComposeInertia(moments: ArrayLike<number>, orientation: Quaternion): number[] {
+    const { x, y, z, w } = orientation;
+    const r = [
+        [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+        [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+        [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+    ];
+    const at = (i: number, j: number) => r[i][0] * moments[0] * r[j][0] + r[i][1] * moments[1] * r[j][1] + r[i][2] * moments[2] * r[j][2];
+    return [at(0, 0), at(1, 1), at(2, 2), at(0, 1), at(0, 2), at(1, 2)];
 }
 
 /** Shape description properties that Box3D can change on live shapes, see bx_Body_SyncShapeDesc. */
@@ -844,49 +925,119 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         return this._getPluginReference(body, instanceIndex).motionType;
     }
 
+    /**
+     * Reads Box3D's mass data and converts it to Babylon's form: the inertia is the principal moments of the tensor
+     * divided by the mass (Babylon's inertia is per unit mass) and the orientation rotates the principal axes into
+     * body space.
+     */
     private _readMassData(data: Box3DBodyData): PhysicsMassProperties {
         this._b3._bx_Body_GetMassData(data.slot);
         const s = this._scratch();
+        const mass = s[0];
+        const principal = new Vector3();
+        const orientation = new Quaternion();
+        DiagonalizeInertia([s[4], s[5], s[6], s[7], s[8], s[9]], principal, orientation);
+        if (mass > 0) {
+            principal.scaleInPlace(1 / mass);
+        }
         return {
-            mass: s[0],
+            mass,
             centerOfMass: new Vector3(s[1], s[2], s[3]),
-            inertia: new Vector3(s[4], s[5], s[6]),
-            inertiaOrientation: Quaternion.Identity(),
+            inertia: principal,
+            inertiaOrientation: orientation,
+        };
+    }
+
+    /** The mass properties of the body: what the user asked for, filled in from the shapes where they said nothing. */
+    private _resolveMassProperties(data: Box3DBodyData): Required<PhysicsMassProperties> {
+        const computed = this._readMassData(data);
+        const user = data.userMassProps ?? {};
+        const mass = user.mass !== undefined && user.mass > 0 ? user.mass : computed.mass! > 0 ? computed.mass! : 1;
+        return {
+            mass,
+            centerOfMass: user.centerOfMass ?? computed.centerOfMass!,
+            inertia: user.inertia ?? computed.inertia!,
+            inertiaOrientation: user.inertiaOrientation ?? (user.inertia ? Quaternion.Identity() : computed.inertiaOrientation!),
         };
     }
 
     private _internalUpdateMassProperties(data: Box3DBodyData): void {
         if (data.motionType !== PhysicsMotionType.DYNAMIC) {
+            // motion locks are world space velocity locks, they would fight a kinematic body's target transform
+            this._applyMotionLocks(data, false, false, false);
             return;
         }
         this._b3._bx_Body_ApplyMassFromShapes(data.slot);
         const user = data.userMassProps;
-        if (!user || (user.mass === undefined && !user.centerOfMass && !user.inertia)) {
+        const hasUser = !!user && (user.mass !== undefined || !!user.centerOfMass || !!user.inertia || !!user.inertiaOrientation);
+        if (!hasUser) {
+            this._applyMotionLocks(data, false, false, false);
             return;
         }
-        const computed = this._readMassData(data);
-        let mass = computed.mass!;
-        const inertia = computed.inertia!.clone();
-        const center = computed.centerOfMass!.clone();
-        if (user.mass !== undefined && user.mass > 0) {
-            // keep the inertia consistent with the requested mass
-            const ratio = mass > 0 ? user.mass / mass : 1;
-            inertia.scaleInPlace(ratio);
-            mass = user.mass;
+        const props = this._resolveMassProperties(data);
+        const mass = props.mass;
+        const inertia = props.inertia;
+        const orientation = props.inertiaOrientation;
+        // Babylon's inertia is per unit mass and a zero component means infinite inertia about that principal axis.
+        // Box3D needs an invertible tensor, so a locked axis gets a very large moment; where the free axes stay aligned
+        // with the world, Box3D's motion locks are added on top and make it exact.
+        const locked = [inertia.x <= 0, inertia.y <= 0, inertia.z <= 0];
+        const largest = Math.max(inertia.x, inertia.y, inertia.z, 1e-4) * LockedInertiaRatio;
+        const moments = [locked[0] ? largest : inertia.x, locked[1] ? largest : inertia.y, locked[2] ? largest : inertia.z].map((value) => value * mass);
+        const tensor = ComposeInertia(moments, orientation);
+        this._b3._bx_Body_SetMassDataFull(
+            data.slot,
+            mass,
+            props.centerOfMass.x,
+            props.centerOfMass.y,
+            props.centerOfMass.z,
+            tensor[0],
+            tensor[1],
+            tensor[2],
+            tensor[3],
+            tensor[4],
+            tensor[5]
+        );
+        this._applyLockedAxes(data, locked, orientation);
+    }
+
+    /**
+     * Box3D locks are world space, Babylon's zero inertia components are body local. Locking two of them leaves a single
+     * free axis, and if that axis is world aligned the body can only ever spin about it, so the world locks are exact
+     * and stay exact. Everything else relies on the large moment above.
+     */
+    private _applyLockedAxes(data: Box3DBodyData, locked: boolean[], orientation: Quaternion): void {
+        const count = locked.filter(Boolean).length;
+        if (count === 3) {
+            this._applyMotionLocks(data, true, true, true);
+            return;
         }
-        if (user.inertia) {
-            inertia.copyFrom(user.inertia);
+        if (count !== 2) {
+            this._applyMotionLocks(data, false, false, false);
+            return;
         }
-        if (user.centerOfMass) {
-            center.copyFrom(user.centerOfMass);
+        this._b3._bx_Body_GetTransform(data.slot);
+        const s = this._scratch();
+        const bodyRotation = this._tmpQuat[0].set(s[3], s[4], s[5], s[6]);
+        const free = locked.indexOf(false);
+        const axis = this._tmpVec3[0].set(free === 0 ? 1 : 0, free === 1 ? 1 : 0, free === 2 ? 1 : 0);
+        axis.applyRotationQuaternionInPlace(orientation).applyRotationQuaternionInPlace(bodyRotation);
+        const components = [Math.abs(axis.x), Math.abs(axis.y), Math.abs(axis.z)];
+        const dominant = components.indexOf(Math.max(...components));
+        if (components[dominant] > 0.9999) {
+            this._applyMotionLocks(data, dominant !== 0, dominant !== 1, dominant !== 2);
+        } else {
+            this._applyMotionLocks(data, false, false, false);
         }
-        if (mass <= 0) {
-            mass = 1;
+    }
+
+    private _applyMotionLocks(data: Box3DBodyData, x: boolean, y: boolean, z: boolean): void {
+        const locks = (x ? 1 : 0) | (y ? 2 : 0) | (z ? 4 : 0);
+        if (locks === data.angularLocks) {
+            return;
         }
-        if (inertia.x <= 0 || inertia.y <= 0 || inertia.z <= 0) {
-            inertia.set(Math.max(inertia.x, 0.01 * mass), Math.max(inertia.y, 0.01 * mass), Math.max(inertia.z, 0.01 * mass));
-        }
-        this._b3._bx_Body_SetMassData(data.slot, mass, center.x, center.y, center.z, inertia.x, inertia.y, inertia.z);
+        data.angularLocks = locks;
+        this._b3._bx_Body_SetMotionLocks(data.slot, 0, 0, 0, x ? 1 : 0, y ? 1 : 0, z ? 1 : 0);
     }
 
     public computeMassProperties(body: PhysicsBody, instanceIndex?: number): PhysicsMassProperties {
@@ -909,7 +1060,7 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
     }
 
     public getMassProperties(body: PhysicsBody, instanceIndex?: number): PhysicsMassProperties {
-        return this._readMassData(this._getPluginReference(body, instanceIndex));
+        return this._resolveMassProperties(this._getPluginReference(body, instanceIndex));
     }
 
     public setLinearDamping(body: PhysicsBody, damping: number, instanceIndex?: number): void {

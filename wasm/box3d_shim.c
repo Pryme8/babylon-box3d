@@ -1015,7 +1015,7 @@ BX_EXPORT void bx_Body_GetAABB( int slot )
 	bxWriteVec3( 3, aabb.upperBound );
 }
 
-/// scratch: [mass, cx, cy, cz, ixx, iyy, izz]
+/// scratch: [mass, cx, cy, cz, ixx, iyy, izz, ixy, ixz, iyz], the inertia tensor about the center of mass
 BX_EXPORT void bx_Body_GetMassData( int slot )
 {
 	BX_BODY( slot );
@@ -1025,19 +1025,41 @@ BX_EXPORT void bx_Body_GetMassData( int slot )
 	s_scratch[4] = md.inertia.cx.x;
 	s_scratch[5] = md.inertia.cy.y;
 	s_scratch[6] = md.inertia.cz.z;
+	s_scratch[7] = md.inertia.cy.x;
+	s_scratch[8] = md.inertia.cz.x;
+	s_scratch[9] = md.inertia.cz.y;
 }
 
-BX_EXPORT void bx_Body_SetMassData( int slot, float mass, float cx, float cy, float cz, float ixx, float iyy, float izz )
+/// Full symmetric inertia tensor, needed for Babylon mass properties with an inertia orientation.
+BX_EXPORT void bx_Body_SetMassDataFull( int slot, float mass, float cx, float cy, float cz, float ixx, float iyy, float izz,
+										float ixy, float ixz, float iyz )
 {
 	BX_BODY( slot );
 	b3MassData md;
 	md.mass = mass;
 	md.center = bxVec3( cx, cy, cz );
-	md.inertia = b3Mat3_zero;
-	md.inertia.cx.x = ixx;
-	md.inertia.cy.y = iyy;
-	md.inertia.cz.z = izz;
+	md.inertia.cx = bxVec3( ixx, ixy, ixz );
+	md.inertia.cy = bxVec3( ixy, iyy, iyz );
+	md.inertia.cz = bxVec3( ixz, iyz, izz );
 	b3Body_SetMassData( body->id, md );
+}
+
+BX_EXPORT void bx_Body_SetMassData( int slot, float mass, float cx, float cy, float cz, float ixx, float iyy, float izz )
+{
+	bx_Body_SetMassDataFull( slot, mass, cx, cy, cz, ixx, iyy, izz, 0.0f, 0.0f, 0.0f );
+}
+
+/// scratch: [lx, ly, lz, ax, ay, az], 1 where the motion is locked
+BX_EXPORT void bx_Body_GetMotionLocks( int slot )
+{
+	BX_BODY( slot );
+	b3MotionLocks locks = b3Body_GetMotionLocks( body->id );
+	s_scratch[0] = locks.linearX ? 1.0f : 0.0f;
+	s_scratch[1] = locks.linearY ? 1.0f : 0.0f;
+	s_scratch[2] = locks.linearZ ? 1.0f : 0.0f;
+	s_scratch[3] = locks.angularX ? 1.0f : 0.0f;
+	s_scratch[4] = locks.angularY ? 1.0f : 0.0f;
+	s_scratch[5] = locks.angularZ ? 1.0f : 0.0f;
 }
 
 BX_EXPORT void bx_Body_ApplyMassFromShapes( int slot )
