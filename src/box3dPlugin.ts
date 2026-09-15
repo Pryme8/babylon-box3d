@@ -459,8 +459,13 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         // Only bodies that moved report an event, so sync those instead of iterating every body.
         const moveCount = this._b3._bx_World_GetMoveEvents(this._worldSlot);
         if (moveCount > 0) {
-            const buffer = new Float32Array(this._b3.HEAPF32.buffer, this._b3._bx_MoveEventsPtr(), moveCount * MOVE_STRIDE);
+            const movePointer = this._b3._bx_MoveEventsPtr();
+            let buffer = new Float32Array(this._b3.HEAPF32.buffer, movePointer, moveCount * MOVE_STRIDE);
             for (let i = 0; i < moveCount; i++) {
+                if (buffer.buffer !== this._b3.HEAPF32.buffer) {
+                    // a world matrix observer grew the wasm memory; the records are still in place
+                    buffer = new Float32Array(this._b3.HEAPF32.buffer, movePointer, moveCount * MOVE_STRIDE);
+                }
                 const offset = i * MOVE_STRIDE;
                 const ref = this._bodies[buffer[offset]];
                 if (!ref || ref.body.disableSync) {
@@ -2242,18 +2247,35 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
     // events
     // ----------------------------------------------------------------------------------------
 
+    /**
+     * Copies `count` event records out of wasm memory and resolves their two body slots (at `slotOffset`) to the plugin's
+     * body references. Observers run user code that can grow the wasm memory, which detaches every HEAPF32 view (creating
+     * bodies or shapes, casting rays), or dispose bodies and hand their slots to new ones, so nothing is read from wasm
+     * memory or the slot table once the first observer has been called.
+     */
+    private _readEvents(pointer: number, count: number, stride: number, slotOffset: number) {
+        const records = new Float32Array(this._b3.HEAPF32.buffer, pointer, count * stride).slice();
+        const refs: Array<{ body: PhysicsBody; index: number; data: Box3DBodyData } | undefined> = new Array(count * 2);
+        for (let i = 0; i < count; i++) {
+            refs[i * 2] = this._bodies[records[i * stride + slotOffset]];
+            refs[i * 2 + 1] = this._bodies[records[i * stride + slotOffset + 1]];
+        }
+        return { records, refs };
+    }
+
     private _notifyCollisions(): void {
         const count = this._b3._bx_World_GetContactEvents(this._worldSlot);
         if (!count) {
             return;
         }
-        const buffer = new Float32Array(this._b3.HEAPF32.buffer, this._b3._bx_ContactEventsPtr(), count * CONTACT_STRIDE);
+        const { records: buffer, refs } = this._readEvents(this._b3._bx_ContactEventsPtr(), count, CONTACT_STRIDE, 3);
         for (let i = 0; i < count; i++) {
             const o = i * CONTACT_STRIDE;
             const kind = buffer[o];
-            const refA = this._bodies[buffer[o + 3]];
-            const refB = this._bodies[buffer[o + 4]];
-            if (!refA || !refB) {
+            const refA = refs[i * 2];
+            const refB = refs[i * 2 + 1];
+            // a body disposed by an earlier observer has slot 0, its remaining events are dropped
+            if (!refA || !refB || !refA.data.slot || !refB.data.slot) {
                 continue;
             }
             const aWants = refA.data.eventMask !== 0;
@@ -2318,12 +2340,12 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         if (!count || !this.onTriggerCollisionObservable.hasObservers()) {
             return;
         }
-        const buffer = new Float32Array(this._b3.HEAPF32.buffer, this._b3._bx_SensorEventsPtr(), count * SENSOR_STRIDE);
+        const { records: buffer, refs } = this._readEvents(this._b3._bx_SensorEventsPtr(), count, SENSOR_STRIDE, 3);
         for (let i = 0; i < count; i++) {
             const o = i * SENSOR_STRIDE;
-            const refA = this._bodies[buffer[o + 3]];
-            const refB = this._bodies[buffer[o + 4]];
-            if (!refA || !refB) {
+            const refA = refs[i * 2];
+            const refB = refs[i * 2 + 1];
+            if (!refA || !refB || !refA.data.slot || !refB.data.slot) {
                 continue;
             }
             this.onTriggerCollisionObservable.notifyObservers({
