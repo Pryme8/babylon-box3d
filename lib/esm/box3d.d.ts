@@ -178,6 +178,12 @@ export interface Box3DExports {
     _bx_Joint_SetTwistLimits(joint: number, enable: number, lower: number, upper: number): void;
     _bx_Joint_EnableMotor(joint: number, flag: number): void;
     _bx_Joint_SetMotorSpeed(joint: number, speed: number): void;
+    /** Spherical joints: target relative angular velocity in joint frame A, with a torque limit. */
+    _bx_Joint_SetSphericalMotor(joint: number, enable: number, x: number, y: number, z: number, maxTorque: number): void;
+    /** Re-converts a spherical motor target to world space, call once per step while the target is non-zero. */
+    _bx_Joint_UpdateMotorFrame(joint: number): void;
+    /** Spherical joints: target rotation of the spring, frame B relative to frame A. */
+    _bx_Joint_SetSphericalTarget(joint: number, qx: number, qy: number, qz: number, qw: number): void;
     _bx_Joint_SetMaxMotorForce(joint: number, force: number): void;
     _bx_Joint_EnableSpring(joint: number, flag: number): void;
     _bx_Joint_SetSpring(joint: number, hertz: number, dampingRatio: number): void;

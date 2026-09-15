@@ -443,6 +443,8 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
     private _bodyCollisionObservable = new Map<number, Observable<IPhysicsCollisionEvent>>();
     private _bodyCollisionEndedObservable = new Map<number, Observable<IBasePhysicsCollisionEvent>>();
     private _touchedInstanceMeshes = new Set<Mesh>();
+    /** spherical joints whose velocity motor target has to be re-expressed in world space every step */
+    private _motorJoints = new Set<number>();
     private _tmpVec3 = [new Vector3(), new Vector3(), new Vector3(), new Vector3()];
     private _tmpQuat = [new Quaternion(), new Quaternion(), new Quaternion()];
     private _warned = new Set<string>();
@@ -551,6 +553,10 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
                 continue;
             }
             this.setPhysicsBodyTransformation(physicsBody, physicsBody.transformNode);
+        }
+
+        for (const joint of this._motorJoints) {
+            this._b3._bx_Joint_UpdateMotorFrame(joint);
         }
 
         const deltaTime = this._useDeltaForWorldStep ? delta : this._fixedTimeStep;
@@ -1950,10 +1956,15 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         this._recreateJoints(cdata);
     }
 
+    private _destroyJoint(joint: number): void {
+        this._motorJoints.delete(joint);
+        this._b3._bx_DestroyJoint(joint);
+    }
+
     private _recreateJoints(cdata: Box3DConstraintData): void {
         for (let i = 0; i < cdata.pairs.length; i++) {
             if (cdata.joints[i]) {
-                this._b3._bx_DestroyJoint(cdata.joints[i]);
+                this._destroyJoint(cdata.joints[i]);
             }
             const pair = cdata.pairs[i];
             cdata.joints[i] = cdata.enabled && pair.parentData.slot && pair.childData.slot ? this._createJoint(cdata, pair.parentData, pair.childData) : 0;
@@ -2056,9 +2067,50 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
                 b3._bx_Joint_SetLimits(joint, min, max);
             }
             b3._bx_Joint_EnableLimit(joint, limited ? 1 : 0);
-            this._applyMotor(joint, state);
+            if (cdata.type !== PhysicsConstraintType.BALL_AND_SOCKET) {
+                this._applyMotor(joint, state);
+            }
+        }
+        if (cdata.type === PhysicsConstraintType.BALL_AND_SOCKET) {
+            this._applySphericalMotor(cdata, joint);
         }
         b3._bx_Joint_WakeBodies(joint);
+    }
+
+    /**
+     * Box3D's spherical joint has one motor for the whole joint: a relative angular velocity, and one spring towards a
+     * target rotation. Babylon has a motor per axis, so the three angular axes are combined into one target in the
+     * joint frame (ANGULAR_X about frame z, ANGULAR_Y about frame x, ANGULAR_Z about frame y).
+     */
+    private _applySphericalMotor(cdata: Box3DConstraintData, joint: number): void {
+        const b3 = this._b3;
+        const twist = cdata.axes.get(PhysicsConstraintAxis.ANGULAR_X);
+        const swing1 = cdata.axes.get(PhysicsConstraintAxis.ANGULAR_Y);
+        const swing2 = cdata.axes.get(PhysicsConstraintAxis.ANGULAR_Z);
+        const states = [twist, swing1, swing2];
+        const velocity = (state?: IAxisState) => (state?.motor === PhysicsConstraintMotorType.VELOCITY ? state.target : 0);
+        const hasVelocity = states.some((state) => state?.motor === PhysicsConstraintMotorType.VELOCITY);
+        const hasPosition = states.some((state) => state?.motor === PhysicsConstraintMotorType.POSITION);
+        const maxTorque = Math.max(...states.map((state) => (state?.motor === PhysicsConstraintMotorType.VELOCITY ? state.maxForce : 0)));
+        b3._bx_Joint_SetSphericalMotor(joint, hasVelocity ? 1 : 0, velocity(swing1), velocity(swing2), velocity(twist), maxTorque);
+        const target = velocity(swing1) !== 0 || velocity(swing2) !== 0 || velocity(twist) !== 0;
+        if (hasVelocity && target) {
+            // the world space target has to follow body A as it turns
+            this._motorJoints.add(joint);
+        } else {
+            this._motorJoints.delete(joint);
+        }
+        b3._bx_Joint_EnableSpring(joint, hasPosition ? 1 : 0);
+        if (hasPosition) {
+            const position = (state?: IAxisState) => (state?.motor === PhysicsConstraintMotorType.POSITION ? state.target : 0);
+            const rotation = this._tmpQuat[0];
+            Quaternion.RotationYawPitchRollToRef(0, 0, position(twist), rotation);
+            const swing = this._tmpQuat[1];
+            Quaternion.RotationYawPitchRollToRef(position(swing2), position(swing1), 0, swing);
+            rotation.multiplyInPlace(swing);
+            b3._bx_Joint_SetSpring(joint, 5, 1);
+            b3._bx_Joint_SetSphericalTarget(joint, rotation.x, rotation.y, rotation.z, rotation.w);
+        }
     }
 
     private _applyMotor(joint: number, state: IAxisState): void {
@@ -2130,12 +2182,7 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
             b3._bx_Joint_SetConstraintTuning(joint, soft.hertz, soft.dampingRatio);
         }
         if (plan.jointType === Box3DJointType.SPHERICAL) {
-            for (const axis of [PhysicsConstraintAxis.ANGULAR_Y, PhysicsConstraintAxis.ANGULAR_Z]) {
-                const state = cdata.axes.get(axis);
-                if (state && state.motor !== PhysicsConstraintMotorType.NONE) {
-                    this._applyMotor(joint, state);
-                }
-            }
+            this._applySphericalMotor(cdata, joint);
         } else if (plan.primaryAxis !== null && plan.jointType !== Box3DJointType.DISTANCE) {
             const state = cdata.axes.get(plan.primaryAxis);
             if (state) {
@@ -2258,7 +2305,7 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         }
         for (const joint of cdata.joints) {
             if (joint) {
-                this._b3._bx_DestroyJoint(joint);
+                this._destroyJoint(joint);
             }
         }
         cdata.joints.length = 0;
@@ -2415,7 +2462,7 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
      */
     public _destroyExtraJoint(slot: number): void {
         if (slot) {
-            this._b3._bx_DestroyJoint(slot);
+            this._destroyJoint(slot);
         }
     }
 
@@ -2597,6 +2644,7 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
     }
 
     public dispose(): void {
+        this._motorJoints.clear();
         this.onCollisionObservable.clear();
         this.onCollisionEndedObservable.clear();
         this.onTriggerCollisionObservable.clear();

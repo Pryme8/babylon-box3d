@@ -4,7 +4,8 @@ import { Quaternion, Vector3 } from "@babylonjs/core/Maths/math.vector";
 import { TransformNode } from "@babylonjs/core/Meshes/transformNode";
 import { PhysicsMotionType } from "@babylonjs/core/Physics/v2/IPhysicsEnginePlugin";
 import { PhysicsBody } from "@babylonjs/core/Physics/v2/physicsBody";
-import { PhysicsShapeBox, PhysicsShapeContainer, PhysicsShapeSphere } from "@babylonjs/core/Physics/v2/physicsShape";
+import { PhysicsShapeBox, PhysicsShapeContainer, PhysicsShapeMesh, PhysicsShapeSphere } from "@babylonjs/core/Physics/v2/physicsShape";
+import { MeshBuilder } from "@babylonjs/core/Meshes/meshBuilder";
 import { BallAndSocketConstraint } from "@babylonjs/core/Physics/v2/physicsConstraint";
 import { PhysicsRaycastResult } from "@babylonjs/core/Physics/physicsRaycastResult";
 import { afterEach, describe, expect, it } from "vitest";
@@ -119,6 +120,48 @@ describe("Box3D shape properties (real wasm)", () => {
         expect(result.hasHit).toBe(false);
         w.plugin.raycast(from, to, result, { membership: 1 << 6, collideWith: 1 << 5 });
         expect(result.hasHit).toBe(true);
+    });
+
+    it("places a mesh child of a container by its translation and rotation", async () => {
+        // a flat plate: 2 wide, 0.4 thick, 2 deep, as a triangle mesh shape
+        const buildPlate = (scene: any) => {
+            const plate = MeshBuilder.CreateBox("plate", { width: 2, height: 0.4, depth: 2 }, scene);
+            plate.isVisible = false;
+            return new PhysicsShapeMesh(plate, scene);
+        };
+        const drop = (w: IWasmScene, name: string, x: number) => {
+            const node = new TransformNode(name, w.scene);
+            node.position.set(x, 5, 0);
+            node.rotationQuaternion = Quaternion.Identity();
+            const body = new PhysicsBody(node, PhysicsMotionType.DYNAMIC, false, w.scene);
+            body.shape = new PhysicsShapeSphere(Vector3.Zero(), 0.25, w.scene);
+            body.setMassProperties({ mass: 1 });
+            return node;
+        };
+
+        world = await CreateWasmScene();
+        let w = world;
+        let container = new PhysicsShapeContainer(w.scene);
+        container.addChild(buildPlate(w.scene), new Vector3(3, 0, 0));
+        const holder = CreateBoxBody(w.scene, "holder", Vector3.Zero(), new Vector3(0.1, 0.1, 0.1), PhysicsMotionType.STATIC);
+        holder.body.shape = container;
+        const onPlate = drop(w, "onPlate", 3);
+        const besidePlate = drop(w, "besidePlate", 0);
+        w.step(120);
+        expect(onPlate.position.y).toBeCloseTo(0.45, 1);
+        expect(besidePlate.position.y).toBeLessThan(-2);
+
+        world.dispose();
+        world = await CreateWasmScene();
+        w = world;
+        container = new PhysicsShapeContainer(w.scene);
+        // stood on its edge: the plate is now 2 tall, so its top is at y = 1 instead of 0.2
+        container.addChild(buildPlate(w.scene), Vector3.Zero(), Quaternion.RotationAxis(new Vector3(1, 0, 0), Math.PI / 2));
+        const holder2 = CreateBoxBody(w.scene, "holder", Vector3.Zero(), new Vector3(0.1, 0.1, 0.1), PhysicsMotionType.STATIC);
+        holder2.body.shape = container;
+        const onEdge = drop(w, "onEdge", 0);
+        w.step(120);
+        expect(onEdge.position.y).toBeCloseTo(1.25, 1);
     });
 
     it("keeps the user mass properties when a body's shape is replaced", async () => {

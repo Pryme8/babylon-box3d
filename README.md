@@ -36,7 +36,7 @@ The wasm is fetched next to the loader script. With a bundler pass `locateFile`,
 | `BOX`, `CYLINDER`, `CONVEX_HULL` | convex hulls (hulls above box3d's 128 edge limit are simplified) |
 | `MESH` | triangle mesh, static and animated bodies only |
 | `HEIGHTFIELD` | height field, static bodies only |
-| `CONTAINER` | multiple Box3D shapes on one body |
+| `CONTAINER` | multiple Box3D shapes on one body (a mesh child's transform is baked into a copy of its mesh data) |
 | `BALL_AND_SOCKET` | spherical joint (cone and twist limits) |
 | `HINGE` | revolute joint (rotation about `axisA`) |
 | `PRISMATIC`, `SLIDER` | prismatic joint |

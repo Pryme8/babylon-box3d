@@ -82,6 +82,13 @@ function createModule() {
         _bx_Joint_SetMotorSpeed: vi.fn(),
         _bx_Joint_SetMaxMotorForce: vi.fn(),
         _bx_Joint_WakeBodies: vi.fn(),
+        _bx_Joint_SetTwistLimits: vi.fn(),
+        _bx_Joint_SetSpring: vi.fn(),
+        _bx_Joint_SetTarget: vi.fn(),
+        _bx_Joint_SetConstraintTuning: vi.fn(),
+        _bx_Joint_SetSphericalMotor: vi.fn(),
+        _bx_Joint_SetSphericalTarget: vi.fn(),
+        _bx_Joint_UpdateMotorFrame: vi.fn(),
         _bx_World_CastRay: vi.fn(() => rayHitCount),
         _bx_RayHitsPtr: vi.fn(() => RayHitsOffset * 4),
     };

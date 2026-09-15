@@ -97,7 +97,10 @@ typedef struct bxBody
 	int hitEvents;
 	int shapeDesc;
 	b3ShapeId* shapes;
+	// the description each shape came from, and the description owning its geometry: the same, except for a mesh in a
+	// container, where a transformed copy of the mesh is baked for this body (see bxInstantiate)
 	int* shapeDescs;
+	int* geomDescs;
 	int shapeCount;
 	int shapeCapacity;
 	bxHelper* helpers;
@@ -164,6 +167,8 @@ typedef struct bxJoint
 {
 	b3JointId id;
 	int alive;
+	// spherical motor target as a relative angular velocity in joint frame A, converted to world space every step
+	b3Vec3 motorVelocity;
 } bxJoint;
 
 static bxJoint* s_joints;
@@ -378,6 +383,7 @@ BX_EXPORT void bx_DestroyWorld( int w )
 		{
 			free( s_bodies[i].shapes );
 			free( s_bodies[i].shapeDescs );
+			free( s_bodies[i].geomDescs );
 			free( s_bodies[i].helpers );
 			memset( s_bodies + i, 0, sizeof( bxBody ) );
 			s_freeBodies[s_freeBodyCount++] = i;
@@ -771,6 +777,9 @@ static void bxDestroyHelpers( bxBody* body )
 	body->helperCount = 0;
 }
 
+static void bxDescRelease( int slot );
+BX_EXPORT void bx_ShapeDesc_Destroy( int slot );
+
 static void bxReleaseBodyShapes( bxBody* body, int destroyShapes )
 {
 	if ( destroyShapes )
@@ -779,15 +788,17 @@ static void bxReleaseBodyShapes( bxBody* body, int destroyShapes )
 	}
 	for ( int i = 0; i < body->shapeCount; ++i )
 	{
-		bxShapeDesc* desc = bxGetDesc( body->shapeDescs[i] );
-		if ( desc != NULL && ( desc->kind == bx_meshDesc || desc->kind == bx_heightFieldDesc ) )
-		{
-			desc->refCount -= 1;
-		}
 		if ( destroyShapes && b3Shape_IsValid( body->shapes[i] ) )
 		{
 			b3DestroyShape( body->shapes[i], false );
 		}
+		int geomSlot = body->geomDescs[i];
+		if ( geomSlot != body->shapeDescs[i] )
+		{
+			// a mesh baked for this body alone, nothing else refers to it
+			bx_ShapeDesc_Destroy( geomSlot );
+		}
+		bxDescRelease( geomSlot );
 	}
 	body->shapeCount = 0;
 }
@@ -808,6 +819,7 @@ BX_EXPORT void bx_DestroyBody( int slot )
 	}
 	free( body->shapes );
 	free( body->shapeDescs );
+	free( body->geomDescs );
 	free( body->helpers );
 	memset( body, 0, sizeof( bxBody ) );
 	s_freeBodies[s_freeBodyCount++] = slot;
@@ -1567,7 +1579,9 @@ BX_EXPORT int bx_GetShapeBuildCount( void )
 	return s_shapeBuildCount;
 }
 
-static void bxBodyPushShape( bxBody* body, b3ShapeId shapeId, int descSlot )
+/// descSlot is the description the shape belongs to, geomSlot the one owning the geometry it was built from (the same,
+/// unless a transformed mesh copy was baked for this body).
+static void bxBodyPushShape( bxBody* body, b3ShapeId shapeId, int descSlot, int geomSlot )
 {
 	if ( B3_IS_NULL( shapeId ) )
 	{
@@ -1579,17 +1593,69 @@ static void bxBodyPushShape( bxBody* body, b3ShapeId shapeId, int descSlot )
 		int capacity = body->shapeCapacity == 0 ? 4 : body->shapeCapacity * 2;
 		body->shapes = (b3ShapeId*)realloc( body->shapes, (size_t)capacity * sizeof( b3ShapeId ) );
 		body->shapeDescs = (int*)realloc( body->shapeDescs, (size_t)capacity * sizeof( int ) );
+		body->geomDescs = (int*)realloc( body->geomDescs, (size_t)capacity * sizeof( int ) );
 		body->shapeCapacity = capacity;
 	}
 	b3Shape_SetUserData( shapeId, (void*)(intptr_t)descSlot );
 	body->shapes[body->shapeCount] = shapeId;
 	body->shapeDescs[body->shapeCount] = descSlot;
+	body->geomDescs[body->shapeCount] = geomSlot;
 	body->shapeCount += 1;
-	bxShapeDesc* desc = bxGetDesc( descSlot );
-	if ( desc != NULL && ( desc->kind == bx_meshDesc || desc->kind == bx_heightFieldDesc ) )
+	bxShapeDesc* geom = bxGetDesc( geomSlot );
+	if ( geom != NULL && ( geom->kind == bx_meshDesc || geom->kind == bx_heightFieldDesc ) )
 	{
-		desc->refCount += 1;
+		geom->refCount += 1;
 	}
+}
+
+/// Box3D mesh shapes have no local transform, so a mesh inside a container is baked into a private transformed copy of
+/// the mesh data. Returns a new description owning that copy, or 0.
+static int bxBakeTransformedMesh( const bxShapeDesc* source, b3Transform xf, b3Vec3 scale )
+{
+	const b3Vec3* vertices = b3GetMeshVertices( source->mesh );
+	const b3MeshTriangle* triangles = b3GetMeshTriangles( source->mesh );
+	int vertexCount = source->mesh->vertexCount;
+	int triangleCount = source->mesh->triangleCount;
+	if ( vertices == NULL || triangles == NULL || vertexCount < 3 || triangleCount < 1 )
+	{
+		return 0;
+	}
+	b3Vec3* baked = (b3Vec3*)malloc( (size_t)vertexCount * sizeof( b3Vec3 ) );
+	int32_t* indices = (int32_t*)malloc( (size_t)triangleCount * 3 * sizeof( int32_t ) );
+	if ( baked == NULL || indices == NULL )
+	{
+		free( baked );
+		free( indices );
+		return 0;
+	}
+	for ( int i = 0; i < vertexCount; ++i )
+	{
+		baked[i] = b3Add( xf.p, b3RotateVector( xf.q, bxMulScale( vertices[i], scale ) ) );
+	}
+	// a mirroring scale flips the winding, so swap two indices to keep the triangles facing outwards
+	int mirrored = scale.x * scale.y * scale.z < 0.0f;
+	for ( int i = 0; i < triangleCount; ++i )
+	{
+		indices[3 * i + 0] = triangles[i].index1;
+		indices[3 * i + 1] = mirrored ? triangles[i].index3 : triangles[i].index2;
+		indices[3 * i + 2] = mirrored ? triangles[i].index2 : triangles[i].index3;
+	}
+	b3MeshDef def = { 0 };
+	def.vertices = baked;
+	def.vertexCount = vertexCount;
+	def.indices = indices;
+	def.triangleCount = triangleCount;
+	def.identifyEdges = true;
+	b3MeshData* mesh = b3CreateMesh( &def, NULL, 0 );
+	free( baked );
+	free( indices );
+	if ( mesh == NULL )
+	{
+		return 0;
+	}
+	int slot = bxNewDesc( bx_meshDesc );
+	s_descs[slot].mesh = mesh;
+	return slot;
 }
 
 static void bxInstantiate( bxBody* body, int descSlot, b3Transform xf, b3Vec3 scale, int depth )
@@ -1623,7 +1689,7 @@ static void bxInstantiate( bxBody* body, int descSlot, b3Transform xf, b3Vec3 sc
 			b3Sphere s = desc->sphere;
 			s.center = b3Add( xf.p, b3RotateVector( xf.q, bxMulScale( s.center, scale ) ) );
 			s.radius *= bxMaxAbsScale( scale );
-			bxBodyPushShape( body, b3CreateSphereShape( body->id, &def, &s ), descSlot );
+			bxBodyPushShape( body, b3CreateSphereShape( body->id, &def, &s ), descSlot, descSlot );
 			break;
 		}
 		case bx_capsuleDesc:
@@ -1632,26 +1698,38 @@ static void bxInstantiate( bxBody* body, int descSlot, b3Transform xf, b3Vec3 sc
 			c.center1 = b3Add( xf.p, b3RotateVector( xf.q, bxMulScale( c.center1, scale ) ) );
 			c.center2 = b3Add( xf.p, b3RotateVector( xf.q, bxMulScale( c.center2, scale ) ) );
 			c.radius *= bxMaxAbsScale( scale );
-			bxBodyPushShape( body, b3CreateCapsuleShape( body->id, &def, &c ), descSlot );
+			bxBodyPushShape( body, b3CreateCapsuleShape( body->id, &def, &c ), descSlot, descSlot );
 			break;
 		}
 		case bx_hullDesc:
 		{
 			if ( bxIsIdentity( xf, scale ) )
 			{
-				bxBodyPushShape( body, b3CreateHullShape( body->id, &def, desc->hull ), descSlot );
+				bxBodyPushShape( body, b3CreateHullShape( body->id, &def, desc->hull ), descSlot, descSlot );
 			}
 			else
 			{
-				bxBodyPushShape( body, b3CreateTransformedHullShape( body->id, &def, desc->hull, xf, scale ), descSlot );
+				bxBodyPushShape( body, b3CreateTransformedHullShape( body->id, &def, desc->hull, xf, scale ), descSlot, descSlot );
 			}
 			break;
 		}
 		case bx_meshDesc:
 		{
-			// Mesh shapes have no local transform in box3d. The plugin bakes any container offset
-			// into the vertices at creation time, so only the scale is applied here.
-			bxBodyPushShape( body, b3CreateMeshShape( body->id, &def, desc->mesh, bxMulScale( desc->meshScale, scale ) ), descSlot );
+			// Mesh shapes have no local transform in box3d, only a scale. A mesh that sits inside a container with an
+			// offset or a rotation gets a transformed copy of its data baked for this body.
+			b3Vec3 meshScale = bxMulScale( desc->meshScale, scale );
+			if ( bxIsIdentity( xf, b3Vec3_one ) )
+			{
+				bxBodyPushShape( body, b3CreateMeshShape( body->id, &def, desc->mesh, meshScale ), descSlot, descSlot );
+			}
+			else
+			{
+				int baked = bxBakeTransformedMesh( desc, xf, meshScale );
+				if ( baked != 0 )
+				{
+					bxBodyPushShape( body, b3CreateMeshShape( body->id, &def, s_descs[baked].mesh, b3Vec3_one ), descSlot, baked );
+				}
+			}
 			break;
 		}
 		case bx_heightFieldDesc:
@@ -1660,7 +1738,7 @@ static void bxInstantiate( bxBody* body, int descSlot, b3Transform xf, b3Vec3 sc
 			b3Transform local = b3MulTransforms( xf, offset );
 			if ( bxIsIdentity( local, b3Vec3_one ) )
 			{
-				bxBodyPushShape( body, b3CreateHeightFieldShape( body->id, &def, desc->heightField ), descSlot );
+				bxBodyPushShape( body, b3CreateHeightFieldShape( body->id, &def, desc->heightField ), descSlot, descSlot );
 			}
 			else
 			{
@@ -1681,7 +1759,7 @@ static void bxInstantiate( bxBody* body, int descSlot, b3Transform xf, b3Vec3 sc
 				body->helpers[body->helperCount].id = helperId;
 				body->helpers[body->helperCount].local = local;
 				body->helperCount += 1;
-				bxBodyPushShape( body, b3CreateHeightFieldShape( helperId, &def, desc->heightField ), descSlot );
+				bxBodyPushShape( body, b3CreateHeightFieldShape( helperId, &def, desc->heightField ), descSlot, descSlot );
 			}
 			break;
 		}
@@ -1703,16 +1781,7 @@ static void bxInstantiate( bxBody* body, int descSlot, b3Transform xf, b3Vec3 sc
 BX_EXPORT void bx_Body_SetShape( int slot, int descSlot )
 {
 	BX_BODY( slot );
-	bxDestroyHelpers( body );
-	for ( int i = 0; i < body->shapeCount; ++i )
-	{
-		if ( b3Shape_IsValid( body->shapes[i] ) )
-		{
-			b3DestroyShape( body->shapes[i], false );
-		}
-		bxDescRelease( body->shapeDescs[i] );
-	}
-	body->shapeCount = 0;
+	bxReleaseBodyShapes( body, 1 );
 	body->shapeDesc = descSlot;
 	if ( descSlot != 0 )
 	{
@@ -2190,6 +2259,44 @@ BX_EXPORT void bx_Joint_EnableMotor( int slot, int flag )
 	}
 }
 
+/// Spherical joints take a relative angular velocity (angularVelocityB - angularVelocityA) in WORLD space. The target
+/// is stored in joint frame A here and converted, so the motor keeps meaning the same thing as body A turns. Call
+/// bx_Joint_UpdateMotorFrame once per step for joints with a non-zero target.
+BX_EXPORT void bx_Joint_UpdateMotorFrame( int slot )
+{
+	b3JointId id = bxGetJointId( slot );
+	if ( B3_IS_NULL( id ) || b3Joint_GetType( id ) != b3_sphericalJoint )
+	{
+		return;
+	}
+	b3Quat frameA = b3MulQuat( b3Body_GetRotation( b3Joint_GetBodyA( id ) ), b3Joint_GetLocalFrameA( id ).q );
+	b3SphericalJoint_SetMotorVelocity( id, b3RotateVector( frameA, s_joints[slot].motorVelocity ) );
+}
+
+/// Enables the spherical motor with a target relative angular velocity in joint frame A (x, y, z) and a torque limit.
+BX_EXPORT void bx_Joint_SetSphericalMotor( int slot, int enable, float x, float y, float z, float maxTorque )
+{
+	b3JointId id = bxGetJointId( slot );
+	if ( B3_IS_NULL( id ) || b3Joint_GetType( id ) != b3_sphericalJoint )
+	{
+		return;
+	}
+	s_joints[slot].motorVelocity = bxVec3( x, y, z );
+	b3SphericalJoint_EnableMotor( id, enable != 0 );
+	b3SphericalJoint_SetMaxMotorTorque( id, maxTorque );
+	bx_Joint_UpdateMotorFrame( slot );
+}
+
+/// Target rotation of a spherical joint's spring: frame B relative to frame A.
+BX_EXPORT void bx_Joint_SetSphericalTarget( int slot, float qx, float qy, float qz, float qw )
+{
+	b3JointId id = bxGetJointId( slot );
+	if ( B3_IS_NON_NULL( id ) && b3Joint_GetType( id ) == b3_sphericalJoint )
+	{
+		b3SphericalJoint_SetTargetRotation( id, bxQuat( qx, qy, qz, qw ) );
+	}
+}
+
 BX_EXPORT void bx_Joint_SetMotorSpeed( int slot, float speed )
 {
 	b3JointId id = bxGetJointId( slot );
@@ -2209,7 +2316,8 @@ BX_EXPORT void bx_Joint_SetMotorSpeed( int slot, float speed )
 			b3DistanceJoint_SetMotorSpeed( id, speed );
 			break;
 		case b3_sphericalJoint:
-			b3SphericalJoint_SetMotorVelocity( id, bxVec3( 0.0f, 0.0f, speed ) );
+			// twist about the joint's own axis (frame z), not a world axis
+			bx_Joint_SetSphericalMotor( slot, 1, 0.0f, 0.0f, speed, b3SphericalJoint_GetMaxMotorTorque( id ) );
 			break;
 		default:
 			break;
