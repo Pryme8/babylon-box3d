@@ -26,7 +26,42 @@ Script tags (Playground, plain HTML):
 ```
 
 The wasm is fetched next to the loader script. With a bundler pass `locateFile`, for example with vite:
-`Box3D({ locateFile: () => wasmUrl })` where `wasmUrl` is `import wasmUrl from "babylon-box3d/lib/esm/box3d.wasm?url"`.
+
+```ts
+import { Box3D, Box3DPlugin } from "babylon-box3d";
+import wasmUrl from "babylon-box3d/lib/esm/box3d.wasm?url";
+
+const box3d = await Box3D({ locateFile: () => wasmUrl });
+```
+
+```ts
+// vite.config.ts: emscripten loaders find their wasm through import.meta.url, keep them out of the pre-bundle
+export default defineConfig({ optimizeDeps: { exclude: ["babylon-box3d"] } });
+```
+
+Peer dependency: `@babylonjs/core` 8 or 9 (built and tested against 8.56.2 and 9.26.1). Babylon 9 registers
+`Scene.enablePhysics` in `@babylonjs/core/Physics/joinedPhysicsEngineComponent`, so import that (or the `@babylonjs/core`
+index) somewhere in the app.
+
+### Installing a local build
+
+```
+npm run build && npm run build:wasm   # dist, umd and lib
+npm pack                              # babylon-box3d-<version>.tgz
+npm install ../babylon-box3d/babylon-box3d-<version>.tgz   # in the game
+```
+
+A tarball is the safest route because it carries no `node_modules`. `npm install ../babylon-box3d` works too, but npm
+links the checkout, so the bundler finds the extension's own copy of `@babylonjs/core` and ships Babylon twice (the
+`instanceof` checks in the plugin then fail). With a link, dedupe it:
+
+```ts
+// vite.config.ts
+export default defineConfig({
+    resolve: { dedupe: ["@babylonjs/core"] },
+    optimizeDeps: { exclude: ["babylon-box3d"] },
+});
+```
 
 ## What is covered
 
@@ -140,9 +175,14 @@ Babylon.js 8.56.2, @babylonjs/havok 1.3.14, oimo 1.0.9. Mean milliseconds per st
 ```
 npm install
 npm run build        # dist (ESM + d.ts) and umd bundles
-npm test             # wasm smoke test + unit tests
+npm test             # wasm smoke test + unit and real wasm tests
 npm run build:wasm   # rebuild the wasm, needs the Emscripten SDK (EMSDK or ../emsdk) and a box3d checkout (BOX3D_DIR or ../box3d)
 ```
+
+`npm test` runs the node smoke test against the shim, unit tests with a mocked wasm module, and tests that drive the
+plugin through Babylon's own classes against the real wasm: constraints, events, shapes, filtering, mass properties,
+activation and a zombie ragdoll (18 jointed boxes dropped and stepped for 10 s). Several of them build the same scene
+with Havok and compare, which is what pins the Havok compatible behaviour down.
 
 The wasm build is single threaded with wasm SIMD128. Box3D's task scheduler could run on wasm threads later, that
 needs `SharedArrayBuffer` and cross origin isolation.
