@@ -79,6 +79,10 @@ and a warning is logged once; cones are capped at 90 degrees. Limit `stiffness`/
 constraint softness, an approximation that applies to the whole joint. Other combinations warn once and use the closest
 joint above.
 
+`setActivationControl` follows Havok: `ALWAYS_ACTIVE` turns Box3D sleeping off for the body, `ALWAYS_INACTIVE` parks it
+(it ignores impulses and velocity changes, is not woken by anything touching it and still blocks other bodies) and
+`SIMULATION_CONTROLLED` hands it back to the solver, asleep until something wakes it.
+
 Box3D extras on the plugin: `explode`, `createWheelJoint` (suspension, steering, spin motor), `createParallelJoint`,
 `setShapeFilterGroup`, `setShapeRollingResistance`, `setAllowFastRotation`, `getStats`. `PhysicsCharacterController`
 is not supported yet, it depends on Havok internals.

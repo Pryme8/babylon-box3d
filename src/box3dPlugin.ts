@@ -14,6 +14,7 @@ import {
     PhysicsConstraintMotorType,
     PhysicsEventType,
     PhysicsPrestepType,
+    PhysicsActivationControl,
 } from "@babylonjs/core/Physics/v2/IPhysicsEnginePlugin";
 import { PhysicsRaycastResult } from "@babylonjs/core/Physics/physicsRaycastResult";
 import { type IRaycastQuery } from "@babylonjs/core/Physics/physicsRaycastResult";
@@ -44,6 +45,8 @@ class Box3DBodyData {
     /** Havok's EventType bits: 1 collision started, 2 collision continued, 4 collision finished */
     public eventMask = 0;
     public motionType = PhysicsMotionType.STATIC;
+    /** Babylon activation control; ALWAYS_INACTIVE parks the body as a static Box3D body, see setActivationControl */
+    public activation = PhysicsActivationControl.SIMULATION_CONTROLLED;
 }
 
 /**
@@ -914,8 +917,50 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
             body,
             (data) => {
                 data.motionType = motionType;
-                this._b3._bx_Body_SetType(data.slot, this._motionTypeToNative(motionType));
+                this._applyNativeMotionType(data);
                 this._internalUpdateMassProperties(data);
+            },
+            instanceIndex
+        );
+    }
+
+    /** The Box3D body type: the Babylon motion type, unless the body is parked by ALWAYS_INACTIVE. */
+    private _applyNativeMotionType(data: Box3DBodyData): void {
+        const native = data.activation === PhysicsActivationControl.ALWAYS_INACTIVE ? 0 : this._motionTypeToNative(data.motionType);
+        this._b3._bx_Body_SetType(data.slot, native);
+    }
+
+    /**
+     * Babylon's activation control, matched to Havok's behaviour with Box3D sleeping.
+     * ALWAYS_ACTIVE turns sleeping off for the body, SIMULATION_CONTROLLED turns it back on. ALWAYS_INACTIVE parks the
+     * body: in Havok such a body ignores impulses and velocity changes, is not woken by anything that touches it and
+     * still blocks other bodies, which Box3D sleeping alone cannot do, so it becomes a static Box3D body until the
+     * control changes. Coming back it is left asleep, like Havok, until something wakes it.
+     * @param body the physics body
+     * @param controlMode how the body may be activated and deactivated
+     * @param instanceIndex optional thin instance index
+     */
+    public setActivationControl(body: PhysicsBody, controlMode: PhysicsActivationControl, instanceIndex?: number): void {
+        this._applyToBodyOrInstances(
+            body,
+            (data) => {
+                if (data.activation === controlMode) {
+                    return;
+                }
+                const wasInactive = data.activation === PhysicsActivationControl.ALWAYS_INACTIVE;
+                data.activation = controlMode;
+                if (controlMode === PhysicsActivationControl.ALWAYS_INACTIVE) {
+                    this._b3._bx_Body_SetLinearVelocity(data.slot, 0, 0, 0);
+                    this._b3._bx_Body_SetAngularVelocity(data.slot, 0, 0, 0);
+                    this._applyNativeMotionType(data);
+                    return;
+                }
+                this._applyNativeMotionType(data);
+                this._internalUpdateMassProperties(data);
+                this._b3._bx_Body_EnableSleep(data.slot, controlMode === PhysicsActivationControl.ALWAYS_ACTIVE ? 0 : 1);
+                if (wasInactive && controlMode === PhysicsActivationControl.SIMULATION_CONTROLLED) {
+                    this._b3._bx_Body_SetAwake(data.slot, 0);
+                }
             },
             instanceIndex
         );
@@ -962,7 +1007,7 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
     }
 
     private _internalUpdateMassProperties(data: Box3DBodyData): void {
-        if (data.motionType !== PhysicsMotionType.DYNAMIC) {
+        if (data.motionType !== PhysicsMotionType.DYNAMIC || data.activation === PhysicsActivationControl.ALWAYS_INACTIVE) {
             // motion locks are world space velocity locks, they would fight a kinematic body's target transform
             this._applyMotionLocks(data, false, false, false);
             return;
