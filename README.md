@@ -119,6 +119,18 @@ const terrain = new PhysicsShape(
 
 A ray's `triangleIndex` is the height field triangle it hit, as it is for a mesh.
 
+**Shapes from points.** `CONVEX_HULL` and `MESH` take their points straight from `positions`, as x, y, z triplets in the
+body's space, when no `mesh` is given, so code with no meshes to read them from, like a headless simulation, can still
+build them. A mesh also takes `positionIndices`, three per triangle, wound so the plain cross product of (b - a) and
+(c - a) points out of the surface. That is Box3D's own winding, so nothing is flipped for a left handed scene:
+
+```ts
+const hull = new PhysicsShape({ type: PhysicsShapeType.CONVEX_HULL, parameters: { positions } }, scene);
+const road = new PhysicsShape({ type: PhysicsShapeType.MESH, parameters: { positions, positionIndices } }, scene);
+```
+
+A `CYLINDER` runs from `pointA` to `pointB`. Before 0.3.0 it was built half its height further along its axis.
+
 `PhysicsMassProperties` follows Havok: `inertia` is the principal moments **per unit mass** (so setting only `mass`
 scales the shape's inertia with it), `inertiaOrientation` rotates those principal axes into body space, and a zero
 component means infinite inertia about that axis. Box3D needs an invertible tensor, so a locked axis gets a moment

@@ -1,6 +1,6 @@
 {
     "name": "babylon-box3d",
-    "version": "0.2.0",
+    "version": "0.3.0",
     "description": "Box3D physics for Babylon.js: Erin Catto's 3D rigid body engine compiled to WebAssembly plus a physics v2 plugin (Box3DPlugin)",
     "license": "MIT",
     "author": "Andrew Butt",

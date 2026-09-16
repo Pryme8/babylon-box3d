@@ -43,6 +43,17 @@ declare module "@babylonjs/core/Physics/v2/IPhysicsEnginePlugin.js" {
          * keep it below 255 for solid ground.
          */
         heightFieldMaterials?: ArrayLike<number>;
+        /**
+         * `CONVEX_HULL` and `MESH` without a `mesh`: the points as x, y, z triplets in the body's space, for code that
+         * builds shapes with no meshes to read them from, like a headless simulation.
+         */
+        positions?: ArrayLike<number>;
+        /**
+         * `MESH` with `positions`: three indices into the points per triangle, wound so the plain cross product of
+         * (b - a) and (c - a) points out of the surface. That is Box3D's own winding, and it is used as given: no
+         * flip for a left handed scene, which only applies to winding read from a Babylon mesh.
+         */
+        positionIndices?: ArrayLike<number>;
     }
 }
 
@@ -1455,7 +1466,6 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
                 const b = options.pointB ?? Vector3.UpReadOnly;
                 const axis = b.subtract(a);
                 const height = axis.length();
-                const mid = a.add(b).scaleInPlace(0.5);
                 const q = this._tmpQuat[0];
                 if (height > 1e-6) {
                     axis.scaleInPlace(1 / height);
@@ -1463,11 +1473,16 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
                 } else {
                     q.set(0, 0, 0, 1);
                 }
-                this._registerShape(shape, b3._bx_ShapeDesc_CreateCylinder(height, options.radius ?? 0, 16, mid.x, mid.y, mid.z, q.x, q.y, q.z, q.w), type);
+                // Box3D's cylinder runs from 0 to height along its local Y, so it goes at pointA, not at the middle.
+                this._registerShape(shape, b3._bx_ShapeDesc_CreateCylinder(height, options.radius ?? 0, 16, a.x, a.y, a.z, q.x, q.y, q.z, q.w), type);
                 break;
             }
             case PhysicsShapeType.CONVEX_HULL:
             case PhysicsShapeType.MESH: {
+                if (!options.mesh && options.positions) {
+                    this._initShapeFromPositions(shape, type, options.positions, options.positionIndices);
+                    break;
+                }
                 const mesh = options.mesh;
                 if (!mesh) {
                     throw new Error("No mesh provided to create physics shape.");
@@ -1547,6 +1562,37 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
             default:
                 throw new Error("Unsupported Shape Type.");
         }
+    }
+
+    private _initShapeFromPositions(shape: PhysicsShape, type: PhysicsShapeType, positions: ArrayLike<number>, indices: ArrayLike<number> | undefined): void {
+        const b3 = this._b3;
+        if (positions.length % 3 !== 0) {
+            throw new Error(`positions needs x, y, z triplets, got ${positions.length} numbers`);
+        }
+        const vertexCount = positions.length / 3;
+        if (type === PhysicsShapeType.CONVEX_HULL) {
+            this._registerShape(
+                shape,
+                this._withFloatBuffer(positions, (ptr) => b3._bx_ShapeDesc_CreateHull(ptr, vertexCount)),
+                type
+            );
+            return;
+        }
+        if (!indices || indices.length % 3 !== 0) {
+            throw new Error("a MESH shape from positions needs positionIndices, three per triangle");
+        }
+        for (let i = 0; i < indices.length; i++) {
+            if (indices[i] < 0 || indices[i] >= vertexCount || !Number.isInteger(indices[i])) {
+                throw new Error(`positionIndices[${i}] is ${indices[i]}, but there are ${vertexCount} points`);
+            }
+        }
+        this._registerShape(
+            shape,
+            this._withFloatBuffer(positions, (vptr) =>
+                this._withIntBuffer(indices, (iptr) => b3._bx_ShapeDesc_CreateMesh(vptr, vertexCount, iptr, indices.length / 3, 1, 1, 1, 0, 0))
+            ),
+            type
+        );
     }
 
     // Re-instantiates the shape on every body that uses it (or uses a container holding it). Only needed for geometry
