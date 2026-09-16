@@ -76,7 +76,7 @@ export default defineConfig({
 | `PhysicsShapeType.SPHERE`, `CAPSULE` | sphere, capsule |
 | `BOX`, `CYLINDER`, `CONVEX_HULL` | convex hulls (hulls above box3d's 128 edge limit are simplified) |
 | `MESH` | triangle mesh, static and animated bodies only |
-| `HEIGHTFIELD` | height field, static bodies only |
+| `HEIGHTFIELD` | height field, static bodies only, with holes (see below) |
 | `CONTAINER` | multiple Box3D shapes on one body (a mesh child's transform is baked into a copy of its mesh data) |
 | `BALL_AND_SOCKET` | spherical joint (cone and twist limits) |
 | `HINGE` | revolute joint (rotation about `axisA`) |
@@ -89,6 +89,35 @@ export default defineConfig({
 | `COLLISION_CONTINUED` | contact hit events (point, normal, approach speed as `impulse`) |
 | `TRIGGER_ENTERED` / `EXITED` | sensor events |
 | thin instances | one Box3D body per instance |
+
+**Height field holes.** Box3D height fields take a material index per cell, and 255 cuts the cell out: nothing
+collides with it and rays pass through. Pass them as `heightFieldMaterials`, one per cell in the same row order as
+`heightFieldData`:
+
+```ts
+import { PhysicsShape } from "@babylonjs/core/Physics/v2/physicsShape";
+import { PhysicsShapeType } from "@babylonjs/core/Physics/v2/IPhysicsEnginePlugin";
+import { BOX3D_HEIGHT_FIELD_HOLE } from "babylon-box3d";
+
+const materials = new Uint8Array((samplesX - 1) * (samplesZ - 1));
+materials[row * (samplesX - 1) + column] = BOX3D_HEIGHT_FIELD_HOLE;
+const terrain = new PhysicsShape(
+    {
+        type: PhysicsShapeType.HEIGHTFIELD,
+        parameters: {
+            heightFieldSizeX: sizeX,
+            heightFieldSizeZ: sizeZ,
+            numHeightFieldSamplesX: samplesX,
+            numHeightFieldSamplesZ: samplesZ,
+            heightFieldData: heights,
+            heightFieldMaterials: materials,
+        },
+    },
+    scene,
+);
+```
+
+A ray's `triangleIndex` is the height field triangle it hit, as it is for a mesh.
 
 `PhysicsMassProperties` follows Havok: `inertia` is the principal moments **per unit mass** (so setting only `mass`
 scales the shape's inertia with it), `inertiaOrientation` rotates those principal axes into body space, and a zero

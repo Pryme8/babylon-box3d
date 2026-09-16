@@ -1312,8 +1312,10 @@ BX_EXPORT int bx_ShapeDesc_CreateMesh( const float* vertices, int vertexCount, c
 }
 
 /// heights: countX * countZ floats indexed [z * countX + x]
-BX_EXPORT int bx_ShapeDesc_CreateHeightField( const float* heights, int countX, int countZ, float sx, float sy, float sz,
-											  int clockwise, float ox, float oy, float oz )
+/// materials: (countX - 1) * (countZ - 1) cell material indices indexed [z * (countX - 1) + x], or NULL for every cell 0.
+/// A cell of B3_HEIGHT_FIELD_HOLE (255) is a hole: nothing collides with it and rays pass through. Box3D copies them.
+BX_EXPORT int bx_ShapeDesc_CreateHeightField( const float* heights, const unsigned char* materials, int countX, int countZ,
+											  float sx, float sy, float sz, int clockwise, float ox, float oy, float oz )
 {
 	float minHeight = heights[0];
 	float maxHeight = heights[0];
@@ -1334,6 +1336,7 @@ BX_EXPORT int bx_ShapeDesc_CreateHeightField( const float* heights, int countX, 
 	}
 	b3HeightFieldDef def = { 0 };
 	def.heights = (float*)heights;
+	def.materialIndices = (uint8_t*)materials;
 	def.countX = countX;
 	def.countZ = countZ;
 	def.scale = bxVec3( sx, sy, sz );

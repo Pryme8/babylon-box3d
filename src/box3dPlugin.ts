@@ -31,6 +31,21 @@ import { VertexBuffer } from "@babylonjs/core/Buffers/buffer.js";
 import { Observable } from "@babylonjs/core/Misc/observable.js";
 import { type Nullable, type FloatArray } from "@babylonjs/core/types.js";
 
+/** The cell material that cuts a hole in a height field: nothing collides with the cell and rays pass through it. */
+export const BOX3D_HEIGHT_FIELD_HOLE = 255;
+
+declare module "@babylonjs/core/Physics/v2/IPhysicsEnginePlugin.js" {
+    interface PhysicsShapeParameters {
+        /**
+         * Box3D height fields only: a material index for every cell, `(numHeightFieldSamplesX - 1) *
+         * (numHeightFieldSamplesZ - 1)` of them, rows in the same order as `heightFieldData`. A cell of
+         * `BOX3D_HEIGHT_FIELD_HOLE` (255) is a hole. The index is also what `userMaterialId` would carry in Box3D, so
+         * keep it below 255 for solid ground.
+         */
+        heightFieldMaterials?: ArrayLike<number>;
+    }
+}
+
 /**
  * Per body plugin data. One instance per Box3D body (thin instances get one each).
  */
@@ -1351,6 +1366,20 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         }
     }
 
+    /** Copies bytes into the module for the length of `fn`; with no bytes, `fn` gets a null pointer. */
+    private _withByteBuffer<T>(values: Nullable<Uint8Array>, fn: (ptr: number) => T): T {
+        if (!values || values.length === 0) {
+            return fn(0);
+        }
+        const ptr = this._b3._malloc(values.length);
+        new Uint8Array(this._b3.HEAPU8.buffer, ptr, values.length).set(values);
+        try {
+            return fn(ptr);
+        } finally {
+            this._b3._free(ptr);
+        }
+    }
+
     private _withIntBuffer<T>(values: ArrayLike<number>, fn: (ptr: number) => T): T {
         const ptr = this._b3._malloc(values.length * 4);
         new Int32Array(this._b3.HEAP32.buffer, ptr, values.length).set(values);
@@ -1476,8 +1505,37 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
                 }
                 const scaleX = options.heightFieldSizeX / (nx - 1);
                 const scaleZ = options.heightFieldSizeZ / (nz - 1);
-                const slot = this._withFloatBuffer(heights, (ptr) =>
-                    b3._bx_ShapeDesc_CreateHeightField(ptr, nx, nz, scaleX, 1, scaleZ, 0, -options.heightFieldSizeX! * 0.5, 0, -options.heightFieldSizeZ! * 0.5)
+                const cellsX = nx - 1;
+                const cellsZ = nz - 1;
+                const source = options.heightFieldMaterials;
+                if (source && source.length !== cellsX * cellsZ) {
+                    throw new Error(`heightFieldMaterials needs ${cellsX * cellsZ} cells (${cellsX} × ${cellsZ}), got ${source.length}`);
+                }
+                // Cells flip along z the same way the heights do.
+                const materials = source ? new Uint8Array(cellsX * cellsZ) : null;
+                if (source && materials) {
+                    for (let x = 0; x < cellsX; x++) {
+                        for (let z = 0; z < cellsZ; z++) {
+                            materials[z * cellsX + x] = source[(cellsZ - 1 - z) * cellsX + x];
+                        }
+                    }
+                }
+                const slot = this._withFloatBuffer(heights, (heightsPtr) =>
+                    this._withByteBuffer(materials, (materialsPtr) =>
+                        b3._bx_ShapeDesc_CreateHeightField(
+                            heightsPtr,
+                            materialsPtr,
+                            nx,
+                            nz,
+                            scaleX,
+                            1,
+                            scaleZ,
+                            0,
+                            -options.heightFieldSizeX! * 0.5,
+                            0,
+                            -options.heightFieldSizeZ! * 0.5
+                        )
+                    )
                 );
                 this._registerShape(shape, slot, type);
                 break;
