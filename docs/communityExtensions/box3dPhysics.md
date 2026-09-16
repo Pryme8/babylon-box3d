@@ -54,6 +54,11 @@ import wasmUrl from "babylon-box3d/lib/esm/box3d.wasm?url"; // vite
 const box3d = await Box3D({ locateFile: () => wasmUrl });
 ```
 
+The loader and the wasm are one build and have to stay together. An app that copies `box3d.wasm` into a folder of its
+own has to refresh that copy whenever it updates the package, and clear its bundler's dependency cache with it; a
+loader and a wasm from two builds cannot bind to each other, so the module fails to instantiate or `new Box3DPlugin`
+throws naming the entry points that are missing.
+
 ### Script tags
 
 ```html

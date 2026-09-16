@@ -39,6 +39,12 @@ const box3d = await Box3D({ locateFile: () => wasmUrl });
 export default defineConfig({ optimizeDeps: { exclude: ["babylon-box3d"] } });
 ```
 
+`box3d.js` and `box3d.wasm` have to come from the same install. If an app copies the wasm somewhere of its own (a
+`public` folder, a CDN) and points `locateFile` at the copy, that copy has to be refreshed whenever the package is,
+and a bundler's dependency cache (`node_modules/.vite`) has to be cleared with it. A loader and a wasm from different
+builds cannot bind to each other: the loader fails to instantiate, or `new Box3DPlugin` throws naming the entry points
+it could not find. Keeping the wasm out of any copy step, as above, avoids the question entirely.
+
 Peer dependency: `@babylonjs/core` 8 or 9 (built and tested against 8.56.2 and 9.26.1). Babylon 9 registers
 `Scene.enablePhysics` in `@babylonjs/core/Physics/joinedPhysicsEngineComponent`, so import that (or the `@babylonjs/core`
 index) somewhere in the app.
@@ -141,7 +147,7 @@ and mesh winding is flipped, exactly like the Havok plugin.
 | `umd/` | plugin bundle for script tags (global `BABYLONBOX3D`), built by `npm run build:umd` |
 | `demo/` | vite showcase: `npm run demo`, then `http://localhost:5178/?demo=pyramid` |
 | `docs/` | the community extension page for the Babylon.js documentation |
-| `test/` | vitest unit tests with a mocked wasm module, node smoke test against the real wasm |
+| `test/` | vitest unit tests with a mocked wasm module, tests against the real wasm, node smoke test, and `packaged.test.ts` over the built `dist` and every loader in `lib` |
 | `bench/` | Box3D vs Havok vs Oimo benchmark: `npm run bench` (node) or `demo/bench.html` (browser), results in `bench/results` |
 
 Demos: `pyramid` (Box3D's Large Pyramid benchmark, thin instances, `&rows=100` for 5050 boxes, click to explode),
