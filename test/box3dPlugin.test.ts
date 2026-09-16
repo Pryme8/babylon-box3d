@@ -93,8 +93,19 @@ function createModule() {
         _bx_RayHitsPtr: vi.fn(() => RayHitsOffset * 4),
     };
 
+    // The plugin refuses a module that is missing any entry point it calls, which is how a loader from another build
+    // gets caught, so the fake grows a stub the first time it is asked for one these tests do not care about.
+    const module_ = new Proxy(b3, {
+        get(target: any, property: string | symbol) {
+            if (typeof property === "string" && property.startsWith("_bx_") && target[property] === undefined) {
+                target[property] = vi.fn(() => 0);
+            }
+            return target[property];
+        },
+    });
+
     return {
-        b3,
+        b3: module_,
         scratch,
         setMassData(slot: number, data: number[]) {
             massData.set(slot, data);

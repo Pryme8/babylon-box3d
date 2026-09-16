@@ -53,6 +53,7 @@
         "build:esm": "tsc -p tsconfig.json",
         "build:umd": "node scripts/build-umd.mjs",
         "build:wasm": "node wasm/build.mjs",
+        "pretest": "npm run build",
         "test": "npm run test:wasm && npm run test:unit",
         "test:wasm": "node test/wasm.smoke.mjs",
         "test:unit": "vitest run",
