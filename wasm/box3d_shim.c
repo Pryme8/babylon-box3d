@@ -219,10 +219,23 @@ static int bxAllocJoint( void )
 	return bxAllocSlot( (void**)&s_joints, sizeof( bxJoint ), &s_jointCount, &s_jointCapacity, &s_freeJoints, &s_freeJointCount );
 }
 
+/// Slot lookups that failed on a non zero slot. Every entry point returns quietly when it does not recognize a slot,
+/// which is the right thing during teardown but hides the two ways this can go wrong for real: a body used after it
+/// was destroyed, and a box3d.js loader paired with a box3d.wasm from a different build, where the exports line up
+/// with the wrong functions. The plugin reads this and says so once.
+static int s_rejectedSlots;
+
+/// Rejected slot lookups since the module was created. Slot 0 means "none" and is not counted.
+BX_EXPORT int bx_GetRejectedSlotCount( void )
+{
+	return s_rejectedSlots;
+}
+
 static bxBody* bxGetBody( int slot )
 {
 	if ( slot <= 0 || slot >= s_bodyCount || s_bodies[slot].alive == 0 )
 	{
+		s_rejectedSlots += slot > 0 ? 1 : 0;
 		return NULL;
 	}
 	return s_bodies + slot;
@@ -232,6 +245,7 @@ static bxShapeDesc* bxGetDesc( int slot )
 {
 	if ( slot <= 0 || slot >= s_descCount || s_descs[slot].alive == 0 )
 	{
+		s_rejectedSlots += slot > 0 ? 1 : 0;
 		return NULL;
 	}
 	return s_descs + slot;
@@ -255,9 +269,12 @@ static b3WorldId bxGetWorld( int slot )
 {
 	if ( slot <= 0 || slot > BX_MAX_WORLDS )
 	{
+		s_rejectedSlots += slot > 0 ? 1 : 0;
 		return b3_nullWorldId;
 	}
-	return s_worlds[slot - 1];
+	b3WorldId world = s_worlds[slot - 1];
+	s_rejectedSlots += B3_IS_NULL( world ) ? 1 : 0;
+	return world;
 }
 
 static int bxBodySlotFromId( b3BodyId bodyId )

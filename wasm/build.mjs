@@ -139,6 +139,12 @@ async function Link(objects, { output, environment, es6 }) {
         "-sFILESYSTEM=0",
         "-sEXPORTED_FUNCTIONS=_malloc,_free",
         "-sEXPORTED_RUNTIME_METHODS=HEAPF32,HEAP32,HEAPU32,HEAPU8",
+        // Keep the wasm export names. At -O3 emscripten renames them to a, b, c... and the loader binds each bx_ entry
+        // point to a letter, so a box3d.js and a box3d.wasm from two different builds bind every function to its
+        // neighbour and fail silently: bodies get created and never reach the world, rays hit nothing, and nothing
+        // throws. Linking exports.js turns that renaming off, so the two bind by name; a mismatch is then either
+        // harmless or a missing function. It costs about 2 KB in the wasm.
+        "-lexports.js",
     ];
     if (environment.includes("web")) {
         args.push("-sMIN_SAFARI_VERSION=160400");

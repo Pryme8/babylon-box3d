@@ -131,6 +131,8 @@ export interface Box3DExports {
     _bx_GetShapeBuildCount(): number;
     /** Live shape descriptions, including meshes baked for container children. */
     _bx_GetShapeDescCount(): number;
+    /** Slot lookups the shim rejected (a handle used after it was destroyed, or a loader and a wasm from different builds). */
+    _bx_GetRejectedSlotCount(): number;
     _bx_Body_GetShapeDesc(body: number): number;
 
     // shape descriptions
