@@ -1,7 +1,8 @@
 // Builds the Box3D WebAssembly module and its JavaScript loaders.
 //
-//   node wasm/build.mjs            release build
-//   node wasm/build.mjs --debug    assertions and symbols, slower
+//   node wasm/build.mjs               release build, single threaded and threaded
+//   node wasm/build.mjs --debug       assertions and symbols, slower
+//   node wasm/build.mjs --no-threads  skip the threaded build (faster to iterate on)
 //
 // Requirements:
 //   * Emscripten SDK: set EMSDK, or keep a checkout at ../emsdk next to this repository.
@@ -12,16 +13,27 @@
 //   lib/esm/box3d.js + box3d.wasm       ES module for browsers and bundlers (default export = factory)
 //   lib/umd/box3d.umd.js + box3d.wasm   script tag / CommonJS build, defines a global `Box3D` factory
 //   lib/node/box3d.mjs + box3d.wasm     ES module for node (tests)
+//   lib/esm-threads, lib/node-threads   the same two modules built with pthreads, so box3d can put its own worker
+//                                       threads on a world step. They need SharedArrayBuffer, which browsers only
+//                                       hand out on a cross origin isolated page, so they are a second build rather
+//                                       than the default. There is no threaded UMD build: the script tag case is the
+//                                       Playground and plain pages, and those are not isolated.
 
 import { spawn } from "child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "fs";
 import { cpus } from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 
 const RepoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const Debug = process.argv.includes("--debug");
+const SkipThreads = process.argv.includes("--no-threads");
 const IsWindows = process.platform === "win32";
+
+// Emscripten spawns this many workers when the threaded module loads, and box3d gets one more worker than that
+// because it also works on the calling thread. The shim clamps its worker count to the same number, so asking for
+// more never ends up creating a worker in the middle of a step. Passed to the shim as BX_WORKER_POOL.
+const WorkerPoolSize = 8;
 
 function Resolve(envName, fallback, probe) {
     const candidates = [process.env[envName], path.resolve(RepoRoot, "..", fallback)].filter(Boolean);
@@ -57,9 +69,6 @@ const Env = {
     PATH: [EmscriptenDir, ...SdkToolDirs("python"), ...SdkToolDirs("node"), process.env.PATH ?? ""].join(path.delimiter),
 };
 
-const ObjDir = path.join(RepoRoot, "build", Debug ? "debug" : "release");
-mkdirSync(ObjDir, { recursive: true });
-
 const CommonFlags = [
     "-std=gnu17",
     "-msimd128",
@@ -94,16 +103,18 @@ function Run(args) {
     });
 }
 
-async function CompileAll() {
+// Threads change the generated code (atomics, thread local storage), so the two builds cannot share object files.
+async function CompileAll(objDir, extraFlags) {
+    mkdirSync(objDir, { recursive: true });
     const jobs = Sources.map((source) => {
-        const object = path.join(ObjDir, path.basename(source, ".c") + ".o");
+        const object = path.join(objDir, path.basename(source, ".c") + ".o");
         return async () => {
             const stale = !existsSync(object) || statSync(object).mtimeMs < statSync(source).mtimeMs;
             if (!stale) {
                 return;
             }
             console.log(`  cc ${path.basename(source)}`);
-            const output = await Run(["-c", source, "-o", object, ...CommonFlags]);
+            const output = await Run(["-c", source, "-o", object, ...CommonFlags, ...extraFlags]);
             if (output.trim()) {
                 console.log(output.trim());
             }
@@ -118,12 +129,12 @@ async function CompileAll() {
             }
         })
     );
-    return Sources.map((source) => path.join(ObjDir, path.basename(source, ".c") + ".o"));
+    return Sources.map((source) => path.join(objDir, path.basename(source, ".c") + ".o"));
 }
 
-async function Link(objects, { output, environment, es6 }) {
+async function Link(objects, { output, environment, es6, threads }) {
     mkdirSync(path.dirname(output), { recursive: true });
-    console.log(`  link ${path.relative(RepoRoot, output)} (${environment}${es6 ? ", es6" : ", umd"})`);
+    console.log(`  link ${path.relative(RepoRoot, output)} (${environment}${es6 ? ", es6" : ", umd"}${threads ? ", threads" : ""})`);
     const args = [
         ...objects,
         "-o",
@@ -149,6 +160,9 @@ async function Link(objects, { output, environment, es6 }) {
     if (environment.includes("web")) {
         args.push("-sMIN_SAFARI_VERSION=160400");
     }
+    if (threads) {
+        args.push("-pthread", `-sPTHREAD_POOL_SIZE=${WorkerPoolSize}`);
+    }
     const result = await Run(args);
     if (result.trim()) {
         console.log(result.trim());
@@ -168,12 +182,33 @@ function RecordUpstream() {
     writeFileSync(path.join(RepoRoot, "UPSTREAM_COMMIT"), `${ref}\n`);
 }
 
+// One hand written declaration file describes every build; keep the copies next to the loaders that import them.
+function CopyTypes(dirs) {
+    const source = path.join(RepoRoot, "lib", "esm", "box3d.d.ts");
+    for (const dir of dirs) {
+        copyFileSync(source, path.join(RepoRoot, "lib", dir, "box3d.d.ts"));
+    }
+}
+
+const BuildDir = path.join(RepoRoot, "build", Debug ? "debug" : "release");
+
 console.log(`Box3D: ${Box3dDir}`);
 console.log(`Emscripten: ${EmscriptenDir}`);
-const objects = await CompileAll();
+const objects = await CompileAll(BuildDir, []);
 await Link(objects, { output: path.join(RepoRoot, "lib", "esm", "box3d.js"), environment: "web,worker", es6: true });
 await Link(objects, { output: path.join(RepoRoot, "lib", "umd", "box3d.umd.js"), environment: "web,worker", es6: false });
 await Link(objects, { output: path.join(RepoRoot, "lib", "node", "box3d.mjs"), environment: "node", es6: true });
+CopyTypes(["node"]);
+
+if (!SkipThreads) {
+    const threadFlags = ["-pthread", `-DBX_WORKER_POOL=${WorkerPoolSize}`];
+    const threadObjects = await CompileAll(`${BuildDir}-threads`, threadFlags);
+    const threaded = { threads: true, es6: true };
+    await Link(threadObjects, { output: path.join(RepoRoot, "lib", "esm-threads", "box3d.js"), environment: "web,worker", ...threaded });
+    await Link(threadObjects, { output: path.join(RepoRoot, "lib", "node-threads", "box3d.mjs"), environment: "node", ...threaded });
+    CopyTypes(["esm-threads", "node-threads"]);
+}
+
 RecordUpstream();
 const wasmSize = statSync(path.join(RepoRoot, "lib", "esm", "box3d.wasm")).size;
 console.log(`done: lib/esm/box3d.wasm ${(wasmSize / 1024).toFixed(0)} KB`);

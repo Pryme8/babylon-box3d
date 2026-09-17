@@ -1,6 +1,6 @@
 {
     "name": "babylon-box3d",
-    "version": "0.3.0",
+    "version": "0.4.0",
     "description": "Box3D physics for Babylon.js: Erin Catto's 3D rigid body engine compiled to WebAssembly plus a physics v2 plugin (Box3DPlugin)",
     "license": "MIT",
     "author": "Andrew Butt",
@@ -29,9 +29,17 @@
             "types": "./lib/esm/box3d.d.ts",
             "default": "./lib/esm/box3d.js"
         },
+        "./wasm/threads": {
+            "types": "./lib/esm-threads/box3d.d.ts",
+            "default": "./lib/esm-threads/box3d.js"
+        },
         "./wasm/node": {
             "types": "./lib/node/box3d.d.ts",
             "default": "./lib/node/box3d.mjs"
+        },
+        "./wasm/node-threads": {
+            "types": "./lib/node-threads/box3d.d.ts",
+            "default": "./lib/node-threads/box3d.mjs"
         },
         "./lib/*": "./lib/*",
         "./umd/*": "./umd/*",

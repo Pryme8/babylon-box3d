@@ -32,7 +32,7 @@ import { HingeConstraint, BallAndSocketConstraint, DistanceConstraint, LockConst
 import "@babylonjs/core/Physics/joinedPhysicsEngineComponent";
 import "@babylonjs/core/Culling/ray";
 import "@babylonjs/core/Lights/Shadows/shadowGeneratorSceneComponent";
-import { Ground, LoadBox3D, MakeMaterialFactory, Palette, type IDemoContext } from "./common";
+import { CanUseThreads, Ground, LoadBox3D, MakeMaterialFactory, Palette, type IDemoContext } from "./common";
 import { BuildCar, BuildDestruction, BuildPyramid, BuildRagdolls } from "./showcase";
 
 const Demos = ["pyramid", "ragdolls", "car", "destruction", "stack", "joints", "terrain", "compound"] as const;
@@ -439,7 +439,8 @@ function Hud(ctx: IDemoContext, demo: Demo): void {
             return;
         }
         const s = ctx.plugin.getStats();
-        stats.textContent = `bodies ${s.bodies}  shapes ${s.shapes}  contacts ${s.contacts}  joints ${s.joints}  islands ${s.islands}\nphysics ${(stepAccum / frames).toFixed(2)} ms/step  fps ${engine.getFps().toFixed(0)}`;
+        const workers = ctx.plugin.workerCount > 1 ? `  workers ${ctx.plugin.workerCount}` : "";
+        stats.textContent = `bodies ${s.bodies}  shapes ${s.shapes}  contacts ${s.contacts}  joints ${s.joints}  islands ${s.islands}\nphysics ${(stepAccum / frames).toFixed(2)} ms/step  fps ${engine.getFps().toFixed(0)}${workers}`;
         accum = 0;
         stepAccum = 0;
         frames = 0;
@@ -457,9 +458,16 @@ async function Main(): Promise<void> {
     const scene = new Scene(engine);
     scene.clearColor = new Color4(0.12, 0.13, 0.17, 1);
 
-    const box3d = await LoadBox3D();
+    // &workers=N spreads a step over N threads (N counts this one). The dev server sets the two headers that isolate
+    // the page, so the threaded build can start; &workers=1, or a page without them, runs everything here.
+    const requestedWorkers = Math.max(1, Math.round(parseFloat(searchParams.get("workers") ?? "1")) || 1);
+    const threads = requestedWorkers > 1 && CanUseThreads();
+    if (requestedWorkers > 1 && !threads) {
+        console.warn("this page is not cross origin isolated, so the threaded build cannot start: running on one thread");
+    }
+    const box3d = await LoadBox3D(threads);
     console.log("Box3D version", box3d._bx_GetVersion());
-    const plugin = new Box3DPlugin(true, box3d);
+    const plugin = new Box3DPlugin(true, box3d, { workerCount: threads ? requestedWorkers : 1 });
     scene.enablePhysics(new Vector3(0, -9.81, 0), plugin);
 
     const camera = new ArcRotateCamera("camera", -Math.PI / 2.5, Math.PI / 3, 40, new Vector3(0, 4, 0), scene);

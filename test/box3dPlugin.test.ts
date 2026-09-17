@@ -47,6 +47,9 @@ function createModule() {
         _bx_Scratch: vi.fn(() => ScratchOffset * 4),
         _bx_CreateWorld: vi.fn(() => 1),
         _bx_DestroyWorld: vi.fn(),
+        // a single threaded module: one worker, which is the thread the step is called on
+        _bx_GetMaxWorkers: vi.fn(() => 1),
+        _bx_World_GetWorkerCount: vi.fn(() => 1),
         _bx_World_SetGravity: vi.fn(),
         _bx_World_Step: vi.fn(),
         _bx_World_GetMoveEvents: vi.fn(() => moveEventCount),

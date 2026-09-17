@@ -10,6 +10,8 @@ import { PhysicsAggregate } from "@babylonjs/core/Physics/v2/physicsAggregate";
 import { PhysicsShapeType } from "@babylonjs/core/Physics/v2/IPhysicsEnginePlugin";
 import Box3D from "../../lib/esm/box3d.js";
 import wasmUrl from "../../lib/esm/box3d.wasm?url";
+import Box3DThreads from "../../lib/esm-threads/box3d.js";
+import threadedWasmUrl from "../../lib/esm-threads/box3d.wasm?url";
 
 /** Shared state handed to every demo builder. */
 export interface IDemoContext {
@@ -65,7 +67,18 @@ export function Param(ctx: IDemoContext, name: string, fallback: number): number
     return Number.isFinite(value) ? value : fallback;
 }
 
-export async function LoadBox3D(): Promise<any> {
+/** Whether this page can run the threaded build: it needs SharedArrayBuffer, so it needs to be cross origin isolated. */
+export function CanUseThreads(): boolean {
+    return typeof SharedArrayBuffer !== "undefined" && crossOriginIsolated;
+}
+
+/**
+ * Loads a Box3D module. The demo talks to lib directly rather than through the package, so it picks the build itself
+ * instead of calling LoadBox3D from the package; both end up in the same place.
+ * @param threads load the threaded build (the caller has checked CanUseThreads)
+ * @returns the resolved module
+ */
+export async function LoadBox3D(threads = false): Promise<any> {
     // Vite serves the wasm as an asset, tell the emscripten loader where it is.
-    return await Box3D({ locateFile: () => wasmUrl });
+    return threads ? await Box3DThreads({ locateFile: () => threadedWasmUrl }) : await Box3D({ locateFile: () => wasmUrl });
 }

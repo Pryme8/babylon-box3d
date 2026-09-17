@@ -8,6 +8,8 @@ import havokWasmUrl from "@babylonjs/havok/lib/esm/HavokPhysics.wasm?url";
 import * as OIMO from "oimo";
 import Box3D from "../../lib/esm/box3d.js";
 import box3dWasmUrl from "../../lib/esm/box3d.wasm?url";
+import Box3DThreads from "../../lib/esm-threads/box3d.js";
+import box3dThreadedWasmUrl from "../../lib/esm-threads/box3d.wasm?url";
 import { DefaultScenes } from "../../bench/scenes";
 import { EngineLabels, IsStanding, MedianRun, ResultsTable, RunCase, type EngineName, type ICaseResult, type IEngineModules } from "../../bench/runner";
 
@@ -44,7 +46,8 @@ function RenderTable(results: ICaseResult[]): void {
         const q = r.quality;
         const outcome = "escaped" in q ? `${q.escaped} escaped` : `${IsStanding(q) ? "standing" : "collapsed"}, top at ${(q.topHeightRetained * 100).toFixed(0)}% height`;
         const isBest = best.get(`${r.scene}-${r.sleep}`) === r.stepMean;
-        return `<tr class="${isBest ? "best" : ""}"><td>${r.sceneLabel}</td><td>${EngineLabels[r.engine]}</td><td>${r.sleep ? "on" : "off"}</td><td>${r.bodies}</td>
+        const label = r.workerCount > 1 ? `${EngineLabels[r.engine]} &times;${r.workerCount}` : EngineLabels[r.engine];
+        return `<tr class="${isBest ? "best" : ""}"><td>${r.sceneLabel}</td><td>${label}</td><td>${r.sleep ? "on" : "off"}</td><td>${r.bodies}</td>
             <td>${r.stepMean.toFixed(2)}</td><td>${r.stepP95.toFixed(2)}</td><td>${r.stepMax.toFixed(2)}</td><td>${r.engineMean.toFixed(2)}</td><td>${r.buildMs.toFixed(0)}</td>
             <td>${outcome}${r.stoppedEarly ? ` (stopped after ${r.stepsRun} steps)` : ""}</td></tr>`;
     });
@@ -57,8 +60,16 @@ async function Run(): Promise<void> {
     $<HTMLButtonElement>("copy").disabled = true;
     try {
         status.textContent = "Loading engines...";
+        // Box3D can run a step on several threads, which needs the threaded build and a cross origin isolated page.
+        // Havok and Oimo have nothing like it, so a row with workers is Box3D using cores the others cannot.
+        const requestedWorkers = Math.max(1, parseInt($<HTMLInputElement>("workers").value, 10) || 1);
+        const threads = requestedWorkers > 1 && typeof SharedArrayBuffer !== "undefined" && crossOriginIsolated;
+        if (requestedWorkers > 1 && !threads) {
+            status.textContent = "This page is not cross origin isolated, so Box3D runs on one thread.";
+        }
+        const workerCount = threads ? requestedWorkers : 1;
         const modules: IEngineModules = {
-            box3d: await Box3D({ locateFile: () => box3dWasmUrl }),
+            box3d: threads ? await Box3DThreads({ locateFile: () => box3dThreadedWasmUrl }) : await Box3D({ locateFile: () => box3dWasmUrl }),
             havok: await HavokPhysics({ locateFile: () => havokWasmUrl }),
             oimo: OIMO,
         };
@@ -79,7 +90,7 @@ async function Run(): Promise<void> {
         await Frame();
         for (const name of engines) {
             const warm = scenes.find((s) => s.id === "pile-1000")!;
-            RunCase(engine, modules, { ...warm, steps: 120 }, { engine: name, sleep: true, budgetMs: 10000 });
+            RunCase(engine, modules, { ...warm, steps: 120 }, { engine: name, sleep: true, budgetMs: 10000, workerCount });
             await Frame();
         }
 
@@ -95,7 +106,7 @@ async function Run(): Promise<void> {
                         }
                         status.textContent = `${spec.label}: ${EngineLabels[name]}, sleep ${sleep ? "on" : "off"}, run ${r + 1}/${repeats}`;
                         await Frame();
-                        previous.push(RunCase(engine, modules, spec, { engine: name, sleep, budgetMs }));
+                        previous.push(RunCase(engine, modules, spec, { engine: name, sleep, budgetMs, workerCount }));
                     }
                 }
                 for (const name of engines) {
@@ -109,6 +120,7 @@ async function Run(): Promise<void> {
         const header = [
             `Browser: ${navigator.userAgent}`,
             `Logical cores: ${navigator.hardwareConcurrency}. Fixed 1/60 s step, engine defaults, median of ${repeats} run(s).`,
+            workerCount > 1 ? `Box3D on the threaded build with ${workerCount} workers. Havok and Oimo are single threaded.` : "Every engine on one thread.",
             "",
             "",
         ].join("\n");

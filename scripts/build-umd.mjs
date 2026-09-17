@@ -27,6 +27,15 @@ const globalsPlugin = {
             contents: 'if (typeof Box3D === "undefined") { throw new Error("babylon.box3d.js needs lib/umd/box3d.umd.js loaded first"); } export default Box3D;',
             loader: "js",
         }));
+        // There is no threaded script tag build: a page that loads physics from a CDN is not cross origin isolated, so
+        // the threaded module could not start anyway. LoadBox3D({ threads: "auto" }) never reaches this; asking for
+        // threads outright says why instead of failing on a missing file.
+        build.onResolve({ filter: /^babylon-box3d\/wasm\/threads$/ }, (args) => ({ path: args.path, namespace: "box3d-threads-stub" }));
+        build.onLoad({ filter: /.*/, namespace: "box3d-threads-stub" }, () => ({
+            contents:
+                'export default function () { throw new Error("babylon.box3d.js is the script tag build and has no threaded module. Install the package and import it, or use LoadBox3D({ threads: \\"auto\\" })."); }',
+            loader: "js",
+        }));
     },
 };
 

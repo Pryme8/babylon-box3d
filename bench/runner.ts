@@ -45,6 +45,8 @@ export interface ICaseOptions {
     sleep: boolean;
     /** stop measuring once this much wall time has been spent stepping */
     budgetMs: number;
+    /** Box3D only: workers on a step, counting the calling thread. Above 1 needs the threaded module. */
+    workerCount?: number;
 }
 
 export interface ICaseResult {
@@ -53,6 +55,7 @@ export interface ICaseResult {
     bodies: number;
     engine: EngineName;
     sleep: boolean;
+    workerCount: number;
     buildMs: number;
     stepsRequested: number;
     stepsRun: number;
@@ -106,7 +109,7 @@ export function RunCase(engine: AbstractEngine, modules: IEngineModules, spec: I
     const buildStart = Now();
     let plugin: any;
     if (options.engine === "box3d") {
-        plugin = new Box3DPlugin(true, modules.box3d);
+        plugin = new Box3DPlugin(true, modules.box3d, { workerCount: options.workerCount });
         restore = TimeCalls(modules.box3d, "_bx_World_Step", engineStep);
     } else if (options.engine === "havok") {
         plugin = new HavokPlugin(true, modules.havok);
@@ -227,6 +230,7 @@ export function RunCase(engine: AbstractEngine, modules: IEngineModules, spec: I
         bodies: spec.bodies.length,
         engine: options.engine,
         sleep: options.sleep,
+        workerCount: plugin instanceof Box3DPlugin ? plugin.workerCount : 1,
         buildMs,
         stepsRequested: spec.steps,
         stepsRun,
@@ -279,8 +283,9 @@ export function ResultsTable(results: ICaseResult[]): string {
     ];
     for (const r of results) {
         const partial = r.stoppedEarly ? ` (stopped after ${r.stepsRun} steps)` : "";
+        const label = r.workerCount > 1 ? `${EngineLabels[r.engine]} x${r.workerCount}` : EngineLabels[r.engine];
         lines.push(
-            `| ${r.sceneLabel} | ${r.bodies} | ${EngineLabels[r.engine]} | ${r.sleep ? "on" : "off"} | ${Fmt(r.stepMean)} | ${Fmt(r.stepP95)} | ${Fmt(r.stepMax)} | ${Fmt(r.engineMean)} | ${Fmt(r.buildMs, 0)} | ${QualityText(r)}${partial} |`
+            `| ${r.sceneLabel} | ${r.bodies} | ${label} | ${r.sleep ? "on" : "off"} | ${Fmt(r.stepMean)} | ${Fmt(r.stepP95)} | ${Fmt(r.stepMax)} | ${Fmt(r.engineMean)} | ${Fmt(r.buildMs, 0)} | ${QualityText(r)}${partial} |`
         );
     }
     return lines.join("\n");

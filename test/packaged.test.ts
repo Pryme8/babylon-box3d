@@ -123,6 +123,27 @@ describe("packaged build", () => {
         expect(names[2]).toEqual(names[0]);
     });
 
+    it("points every entry in the package export map at a file that exists", () => {
+        const pkg = JSON.parse(Read("package.json"));
+        const paths: string[] = [];
+        const collect = (value: any) => {
+            if (typeof value === "string") {
+                paths.push(value);
+            } else if (value && typeof value === "object") {
+                Object.values(value).forEach(collect);
+            }
+        };
+        collect(pkg.exports);
+        // a wildcard entry stands for a folder, so check that instead of a file named *
+        for (const relative of paths) {
+            const target = relative.replace(/\/\*$/, "");
+            expect(existsSync(path.join(Root, target)), `${relative} in package.json exports`).toBe(true);
+        }
+        // the two builds and their typings, which is what an import of babylon-box3d/wasm/threads resolves through
+        expect(paths).toContain("./lib/esm-threads/box3d.js");
+        expect(paths).toContain("./lib/node-threads/box3d.mjs");
+    });
+
     it("binds its exports by name, so a loader and a wasm from two builds cannot bind the wrong functions", () => {
         for (const { loader } of Loaders) {
             const source = Read(loader);

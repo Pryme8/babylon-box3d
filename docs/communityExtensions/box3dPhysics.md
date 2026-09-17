@@ -27,6 +27,7 @@ video-content:
 - Collision started, continued and finished events, trigger events, per body observables, Havok's event mask bits
 - Ray casts with membership and collide masks
 - Box3D extras: explosions, wheel joints with suspension and steering, parallel joints, collision groups, rolling resistance
+- An optional threaded build that runs one world step across several worker threads, with identical results
 
 Not supported yet: `PhysicsCharacterController`, which currently depends on Havok internals.
 
@@ -58,6 +59,29 @@ The loader and the wasm are one build and have to stay together. An app that cop
 own has to refresh that copy whenever it updates the package, and clear its bundler's dependency cache with it; a
 loader and a wasm from two builds cannot bind to each other, so the module fails to instantiate or `new Box3DPlugin`
 throws naming the entry points that are missing.
+
+### Threads
+
+Box3D can run a world step on several threads. That needs `SharedArrayBuffer`, which a browser only gives to a [cross origin isolated](https://developer.mozilla.org/en-US/docs/Web/API/Window/crossOriginIsolated) page, so it ships as a second build of the wasm that is loaded only when asked for:
+
+```typescript
+import { LoadBox3D, Box3DPlugin } from "babylon-box3d";
+
+// the threaded build where the page allows it, the single threaded one everywhere else
+const box3d = await LoadBox3D({ threads: "auto" });
+scene.enablePhysics(new Vector3(0, -9.81, 0), new Box3DPlugin(true, box3d, { workerCount: "auto" }));
+```
+
+The page has to be served with:
+
+```
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+`workerCount` counts the thread the step is called on, so 4 means this one and 3 others; `"auto"` asks for half of `navigator.hardwareConcurrency`. On a page that is not isolated the single threaded build is loaded, the worker count is clamped to 1 and the plugin explains it once in the console, so the same code runs either way. Results do not change: the same scene stepped the same number of times reaches bit identical positions at any worker count. The step is still finished when `executeStep` returns, so nothing in a scene has to be written differently.
+
+The threads are worth asking for on scenes with thousands of awake bodies, where they take a step several times faster than one thread can. Under a few hundred they cost more than they save.
 
 ### Script tags
 

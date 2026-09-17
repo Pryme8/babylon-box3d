@@ -459,6 +459,7 @@ const RequiredNativeExports = [
     "_bx_Joint_SetCollideConnected", "_bx_Joint_SetConstraintTuning", "_bx_Joint_SetLimits", "_bx_Joint_SetMaxMotorForce",
     "_bx_Joint_SetMotorSpeed", "_bx_Joint_SetSphericalMotor", "_bx_Joint_SetSphericalTarget", "_bx_Joint_SetSpring", "_bx_Joint_SetTarget",
     "_bx_Joint_SetTwistLimits", "_bx_Joint_UpdateMotorFrame", "_bx_Joint_WakeBodies", "_bx_MoveEventsPtr", "_bx_RayHitsPtr", "_bx_Scratch",
+    "_bx_GetMaxWorkers", "_bx_World_GetWorkerCount",
     "_bx_SensorEventsPtr", "_bx_ShapeDesc_AddChild", "_bx_ShapeDesc_BuildDebugGeometry", "_bx_ShapeDesc_CreateBox", "_bx_ShapeDesc_CreateCapsule",
     "_bx_ShapeDesc_CreateContainer", "_bx_ShapeDesc_CreateCylinder", "_bx_ShapeDesc_CreateHeightField", "_bx_ShapeDesc_CreateHull",
     "_bx_ShapeDesc_CreateMesh", "_bx_ShapeDesc_CreateSphere", "_bx_ShapeDesc_Destroy", "_bx_ShapeDesc_GetAABB", "_bx_ShapeDesc_GetCategoryBits",
@@ -470,6 +471,27 @@ const RequiredNativeExports = [
 ];
 
 /**
+ * Options for the Box3D plugin, passed to the constructor after the module.
+ */
+export interface IBox3DPluginOptions {
+    /**
+     * Workers box3d may put on a world step, counting the thread the step is called on. 1 (the default) keeps
+     * everything on the calling thread. Anything above 1 needs the threaded build of the module
+     * (`LoadBox3D({ threads: true })` or `babylon-box3d/wasm/threads`), which in turn needs a cross origin isolated
+     * page; on the single threaded module the request is clamped to 1 and a warning explains why.
+     * "auto" asks for half of `navigator.hardwareConcurrency`, capped at what the build supports: box3d gains little
+     * from the second thread of a core, and leaving room for rendering matters more than the last worker.
+     * The world is created in the constructor and box3d builds its threads with it, so this cannot change later.
+     */
+    workerCount?: number | "auto";
+    /**
+     * Solver sub steps per world step. Box3D's default of 4 is what keeps tall stacks standing; 2 roughly halves
+     * solver time and is worth trying for scenes that are mostly loose bodies, 8 buys stiffness in exchange for time.
+     */
+    subStepCount?: number;
+}
+
+/**
  * Box3D physics plugin for Babylon.js physics v2.
  * Box3D is Erin Catto's 3D rigid body engine (https://github.com/erincatto/box3d). This plugin drives the
  * WebAssembly build that ships in this package (a flat, handle based C shim over box3d).
@@ -479,6 +501,12 @@ const RequiredNativeExports = [
  * const box3d = await Box3D();
  * scene.enablePhysics(new Vector3(0, -9.81, 0), new Box3DPlugin(true, box3d));
  * ```
+ * On a cross origin isolated page the threaded module can spread a step over several workers:
+ * ```ts
+ * import { LoadBox3D, Box3DPlugin } from "babylon-box3d";
+ * const box3d = await LoadBox3D({ threads: "auto" });
+ * scene.enablePhysics(new Vector3(0, -9.81, 0), new Box3DPlugin(true, box3d, { workerCount: "auto" }));
+ * ```
  */
 export class Box3DPlugin implements IPhysicsEnginePluginV2 {
     /** Reference to the WASM module (the value resolved by the module factory). */
@@ -487,6 +515,8 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
     public name = "Box3DPlugin";
     /** Number of solver sub steps per world step. Box3D recommends 4. */
     public subStepCount = 4;
+    /** Workers box3d puts on a world step, counting the calling thread. 1 unless the threaded module asked for more. */
+    public readonly workerCount: number = 1;
     /** Wall clock time of the last world step in milliseconds (JavaScript side, includes the event sync). */
     public lastStepTimeMs = 0;
 
@@ -519,10 +549,12 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
      * Creates a Box3D plugin.
      * @param _useDeltaForWorldStep step the world with the frame delta (true) or a fixed time step (false)
      * @param box3dModule the resolved Box3D WASM module (await Box3DModule())
+     * @param options worker count and sub steps, see IBox3DPluginOptions
      */
     public constructor(
         private _useDeltaForWorldStep = true,
-        box3dModule: any
+        box3dModule: any,
+        options?: IBox3DPluginOptions
     ) {
         if (!box3dModule) {
             throw new Error("Box3D module is required: pass the awaited result of the Box3D module factory.");
@@ -537,10 +569,46 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         }
         this._b3 = box3dModule;
         this.world = box3dModule;
-        this._worldSlot = this._b3._bx_CreateWorld(0, -9.81, 0);
+        if (options?.subStepCount !== undefined) {
+            this.subStepCount = Math.max(1, Math.round(options.subStepCount));
+        }
+        this._worldSlot = this._b3._bx_CreateWorld(0, -9.81, 0, this._resolveWorkerCount(options?.workerCount));
         if (!this._worldSlot) {
             throw new Error("Box3D: could not create a world (max worlds reached?)");
         }
+        // what box3d settled on, which is the request clamped to what this build of the module can run
+        this.workerCount = Math.max(1, this._b3._bx_World_GetWorkerCount(this._worldSlot));
+    }
+
+    /**
+     * Turns the requested worker count into one this module can honour. Only the threaded build reports more than one,
+     * and asking a single threaded build for workers is quiet enough to look like it worked, so say so once.
+     * @param requested the constructor option
+     * @returns the count to create the world with
+     */
+    private _resolveWorkerCount(requested: number | "auto" | undefined): number {
+        const supported = Math.max(1, this._b3._bx_GetMaxWorkers());
+        if (requested === undefined) {
+            return 1;
+        }
+        let wanted: number;
+        if (requested === "auto") {
+            const cores = (typeof navigator !== "undefined" && navigator.hardwareConcurrency) || 4;
+            // half the reported cores: the other half is usually the second thread of each core, and box3d gains
+            // little from those, while the renderer still needs somewhere to run
+            wanted = Math.max(1, Math.floor(cores / 2));
+        } else {
+            wanted = Math.max(1, Math.round(requested));
+        }
+        if (wanted > 1 && supported === 1) {
+            this._warnOnce(
+                "single-threaded-module",
+                `${wanted} workers were requested, but this Box3D module was built without threads, so the step stays on the calling ` +
+                    "thread. Load the threaded build (LoadBox3D({ threads: true }), or babylon-box3d/wasm/threads) from a cross origin " +
+                    "isolated page: it needs SharedArrayBuffer, which browsers only allow with the COOP and COEP headers set."
+            );
+        }
+        return Math.min(wanted, supported);
     }
 
     // ----------------------------------------------------------------------------------------

@@ -368,11 +368,199 @@ static int bxIsIdentity( b3Transform xf, b3Vec3 scale )
 }
 
 // ---------------------------------------------------------------------------------------------
+// Worker threads
+// ---------------------------------------------------------------------------------------------
+//
+// The threaded build spreads a world step over several threads. Box3D can do that on its own, but its scheduler
+// creates threads with the world and joins them when the world is destroyed, and joining is what breaks in a browser:
+// a worker emscripten has not finished starting cannot get going while the main thread sits in pthread_join waiting
+// for it, and the page stops there for good. Disposing a scene and building the next one in the same function is
+// enough to reach that, so it is not a corner.
+//
+// The shim brings its own task system instead, which box3d takes through the world definition. The threads are
+// created once, shared by every world and never joined, so worlds come and go without touching them. The design is
+// the one box3d uses internally - a task ring, a semaphore, and a caller that runs pending tasks itself while it
+// waits - and box3d still splits the work by worker count, so results do not change.
+
+#ifdef __EMSCRIPTEN_PTHREADS__
+
+#include <pthread.h>
+#include <sched.h>
+#include <semaphore.h>
+#include <stdatomic.h>
+
+// Emscripten pre-spawns BX_WORKER_POOL workers when the module loads (wasm/build.mjs passes the same number to
+// PTHREAD_POOL_SIZE). Staying inside that is what keeps pthread_create from having to start a worker on the spot.
+#ifndef BX_WORKER_POOL
+#define BX_WORKER_POOL 8
+#endif
+#define BX_MAX_WORKERS ( BX_WORKER_POOL + 1 < B3_MAX_WORKERS ? BX_WORKER_POOL + 1 : B3_MAX_WORKERS )
+
+// Tasks live for one step and the ring is rewound at the top of every step, so this only has to cover a single step.
+// Box3D's own scheduler holds 256 with 32 workers.
+#define BX_TASK_CAPACITY 512
+
+enum bxTaskStatus
+{
+	bxTaskFree = 0,
+	bxTaskPending = 1,
+	bxTaskClaimed = 2,
+	bxTaskComplete = 3,
+};
+
+typedef struct bxTask
+{
+	b3TaskCallback* callback;
+	void* context;
+	atomic_int status;
+} bxTask;
+
+static bxTask s_tasks[BX_TASK_CAPACITY];
+static atomic_int s_taskCount;
+static sem_t s_taskSemaphore;
+static int s_workerThreads;
+static int s_poolStarted;
+
+// Claims and runs one pending task. Returns 1 if it ran something.
+static int bxRunOneTask( void )
+{
+	int count = atomic_load( &s_taskCount );
+	if ( count > BX_TASK_CAPACITY )
+	{
+		count = BX_TASK_CAPACITY;
+	}
+	for ( int i = 0; i < count; ++i )
+	{
+		bxTask* task = s_tasks + i;
+		if ( atomic_load( &task->status ) != bxTaskPending )
+		{
+			continue;
+		}
+		int expected = bxTaskPending;
+		if ( atomic_compare_exchange_strong( &task->status, &expected, bxTaskClaimed ) == 0 )
+		{
+			continue;
+		}
+		task->callback( task->context );
+		atomic_store( &task->status, bxTaskComplete );
+		return 1;
+	}
+	return 0;
+}
+
+static void* bxWorkerMain( void* context )
+{
+	( (void)( context ) );
+	for ( ;; )
+	{
+		// only worker threads block here; the thread that calls the step never does
+		sem_wait( &s_taskSemaphore );
+		while ( bxRunOneTask() )
+		{
+		}
+	}
+	return NULL;
+}
+
+// Grows the shared pool. Called while creating a world, never during a step.
+static int bxEnsureWorkers( int threads )
+{
+	if ( threads > BX_WORKER_POOL )
+	{
+		threads = BX_WORKER_POOL;
+	}
+	if ( s_poolStarted == 0 )
+	{
+		if ( sem_init( &s_taskSemaphore, 0, 0 ) != 0 )
+		{
+			return 0;
+		}
+		s_poolStarted = 1;
+	}
+	while ( s_workerThreads < threads )
+	{
+		pthread_t thread;
+		if ( pthread_create( &thread, NULL, bxWorkerMain, NULL ) != 0 )
+		{
+			break;
+		}
+		// nothing ever joins these: they live as long as the module does
+		pthread_detach( thread );
+		s_workerThreads++;
+	}
+	// what this world may use, not how big the shared pool has grown for some other world
+	return s_workerThreads < threads ? s_workerThreads : threads;
+}
+
+static void* bxEnqueueTask( b3TaskCallback* task, void* taskContext, void* userContext, const char* name )
+{
+	( (void)( userContext ) );
+	( (void)( name ) );
+	int slot = atomic_fetch_add( &s_taskCount, 1 );
+	if ( slot >= BX_TASK_CAPACITY )
+	{
+		// more tasks in one step than the ring holds: run it here and tell box3d there is nothing to wait for
+		task( taskContext );
+		return NULL;
+	}
+	bxTask* entry = s_tasks + slot;
+	entry->callback = task;
+	entry->context = taskContext;
+	// publishes the callback and context with it
+	atomic_store( &entry->status, bxTaskPending );
+	sem_post( &s_taskSemaphore );
+	return entry;
+}
+
+static void bxFinishTask( void* userTask, void* userContext )
+{
+	( (void)( userContext ) );
+	if ( userTask == NULL )
+	{
+		return;
+	}
+	bxTask* entry = userTask;
+	while ( atomic_load( &entry->status ) != bxTaskComplete )
+	{
+		// carry a share of the step rather than spinning on it, which is also what keeps this from blocking
+		if ( bxRunOneTask() == 0 )
+		{
+			sched_yield();
+		}
+	}
+}
+
+// Rewinds the ring for a step. Every task from the last step has completed, because finishTask waited for each one.
+static void bxResetTasks( void )
+{
+	atomic_store( &s_taskCount, 0 );
+}
+
+#else
+
+#define BX_MAX_WORKERS 1
+
+#endif
+
+// ---------------------------------------------------------------------------------------------
 // World
 // ---------------------------------------------------------------------------------------------
 
-BX_EXPORT int bx_CreateWorld( float gx, float gy, float gz )
+BX_EXPORT int bx_GetMaxWorkers( void )
 {
+	return BX_MAX_WORKERS;
+}
+
+BX_EXPORT int bx_CreateWorld( float gx, float gy, float gz, int workerCount )
+{
+	if ( workerCount < 1 )
+	{
+		workerCount = 1;
+	}
+	if ( workerCount > BX_MAX_WORKERS )
+	{
+		workerCount = BX_MAX_WORKERS;
+	}
 	for ( int i = 0; i < BX_MAX_WORLDS; ++i )
 	{
 		if ( B3_IS_NULL( s_worlds[i] ) )
@@ -380,11 +568,30 @@ BX_EXPORT int bx_CreateWorld( float gx, float gy, float gz )
 			b3WorldDef def = b3DefaultWorldDef();
 			def.gravity = bxVec3( gx, gy, gz );
 			def.workerCount = 1;
+#ifdef __EMSCRIPTEN_PTHREADS__
+			if ( workerCount > 1 )
+			{
+				// the shared pool, not box3d's own threads, and however many of them actually started
+				def.workerCount = (uint32_t)( bxEnsureWorkers( workerCount - 1 ) + 1 );
+				if ( def.workerCount > 1 )
+				{
+					def.enqueueTask = bxEnqueueTask;
+					def.finishTask = bxFinishTask;
+					def.userTaskContext = NULL;
+				}
+			}
+#endif
 			s_worlds[i] = b3CreateWorld( &def );
 			return i + 1;
 		}
 	}
 	return 0;
+}
+
+BX_EXPORT int bx_World_GetWorkerCount( int w )
+{
+	b3WorldId worldId = bxGetWorld( w );
+	return B3_IS_NULL( worldId ) ? 0 : b3World_GetWorkerCount( worldId );
 }
 
 BX_EXPORT void bx_DestroyWorld( int w )
@@ -420,6 +627,9 @@ BX_EXPORT void bx_World_Step( int w, float dt, int subSteps )
 	{
 		return;
 	}
+#ifdef __EMSCRIPTEN_PTHREADS__
+	bxResetTasks();
+#endif
 	b3World_Step( worldId, dt, subSteps );
 }
 

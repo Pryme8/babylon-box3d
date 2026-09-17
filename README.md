@@ -69,6 +69,64 @@ export default defineConfig({
 });
 ```
 
+## Threads
+
+Box3D can run one world step on several threads. The package ships a second build of the wasm for that, because
+threads need `SharedArrayBuffer`, and a browser only hands that out to a [cross origin isolated](https://developer.mozilla.org/en-US/docs/Web/API/Window/crossOriginIsolated)
+page - one served with:
+
+```
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Embedder-Policy: require-corp
+```
+
+`LoadBox3D` picks the build and the plugin asks for the workers:
+
+```ts
+import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import { LoadBox3D, Box3DPlugin } from "babylon-box3d";
+
+// "auto" uses the threaded build where the page allows it and the single threaded one everywhere else
+const box3d = await LoadBox3D({ threads: "auto" });
+scene.enablePhysics(new Vector3(0, -9.81, 0), new Box3DPlugin(true, box3d, { workerCount: "auto" }));
+```
+
+`workerCount` counts the thread the step is called on, so 4 means this thread and 3 others. `"auto"` asks for half
+of `navigator.hardwareConcurrency`: box3d gains little from the second thread of a core, and the renderer still needs
+somewhere to run. The threaded module is imported dynamically, so a page that never asks for threads never downloads
+it. `CanUseBox3DThreads()` reports whether this page can run them.
+
+Everything degrades rather than breaking. On a page that is not isolated, `threads: "auto"` loads the single threaded
+build, `workerCount` is clamped to 1 and the plugin says so once in the console. `threads: true` throws instead, for
+an app that would rather find out than quietly run on one thread.
+
+What the threads do and do not change:
+
+- **Results do not change.** The same scene stepped the same number of times lands on bit identical positions at any
+  worker count, which is what `test/threads.test.ts` checks against the single threaded build.
+- **The step still returns when it returns.** The calling thread does its share of the work and the step is over when
+  the last worker is done; nothing is deferred to the next frame, so there is no extra latency and no API change.
+- **Other engines run on one thread.** Havok's Babylon plugin is single threaded, so this is cores nothing else in
+  Babylon is using.
+- **Small scenes gain nothing.** Splitting a step costs something; under a few hundred awake bodies it is not worth
+  it. Ask for workers on the scenes that need them.
+- **There is no threaded script tag build.** A Playground or CDN page is not isolated, so it could not start one.
+
+The threads themselves belong to the module, not to a world: they are created once, shared by every world, and never
+joined. That is deliberate. Box3D's own scheduler creates threads with a world and joins them when it is destroyed,
+and joining is what deadlocks a browser - a worker that has not finished starting cannot finish while the main thread
+waits for it in `pthread_join`, and disposing a scene and building the next one in the same function is enough to
+reach that. The shim hands box3d its own task system instead (`wasm/box3d_shim.c`), so worlds come and go freely.
+
+### Tuning
+
+- `subStepCount` (default 4, box3d's own) is the solver's sub steps per step. Tall stacks need it; 2 roughly halves
+  solver time for scenes that are mostly loose bodies, 8 buys stiffness in exchange for time.
+- `plugin.setSleepingEnabled(false)` measures raw throughput but costs a lot in a settled scene: sleeping is why a
+  standing pyramid is nearly free.
+- Contact events cross into JavaScript one record per contact per step. A body nothing listens to should not be
+  asking for them: `body.setCollisionCallbackEnabled(false)`, which is the default.
+
 ## What is covered
 
 | Babylon v2 | Box3D |
@@ -181,10 +239,12 @@ and mesh winding is flipped, exactly like the Havok plugin.
 | path | what |
 | --- | --- |
 | `src/box3dPlugin.ts` | the plugin (`IPhysicsEnginePluginV2`) |
-| `src/index.ts` | package entry: `Box3DPlugin`, `Box3DWheelJoint`, `Box3D` (wasm factory) |
+| `src/index.ts` | package entry: `Box3DPlugin`, `Box3DWheelJoint`, `Box3D` (wasm factory), `LoadBox3D` |
+| `src/loadBox3D.ts` | picks the single threaded or threaded wasm build for the page |
 | `wasm/box3d_shim.c` | C shim: flat, handle based API over box3d (`bx_*` functions) |
-| `wasm/build.mjs` | emcc build for `lib/esm`, `lib/umd` (global `Box3D`) and `lib/node` |
+| `wasm/build.mjs` | emcc build for `lib/esm`, `lib/umd` (global `Box3D`), `lib/node` and the threaded pair |
 | `lib/` | committed wasm builds and typings, `UPSTREAM_COMMIT` is the box3d commit |
+| `lib/esm-threads`, `lib/node-threads` | the same module built with pthreads, see [Threads](#threads) |
 | `umd/` | plugin bundle for script tags (global `BABYLONBOX3D`), built by `npm run build:umd` |
 | `demo/` | vite showcase: `npm run demo`, then `http://localhost:5178/?demo=pyramid` |
 | `docs/` | the community extension page for the Babylon.js documentation |
@@ -231,8 +291,10 @@ plugin through Babylon's own classes against the real wasm: constraints, events,
 activation and a zombie ragdoll (18 jointed boxes dropped and stepped for 10 s). Several of them build the same scene
 with Havok and compare, which is what pins the Havok compatible behaviour down.
 
-The wasm build is single threaded with wasm SIMD128. Box3D's task scheduler could run on wasm threads later, that
-needs `SharedArrayBuffer` and cross origin isolation.
+`npm run build:wasm` produces both builds: the single threaded one in `lib/esm`, `lib/umd` and `lib/node`, and the
+threaded one in `lib/esm-threads` and `lib/node-threads`. Add `--no-threads` to skip the second while iterating on the
+shim. Both are wasm SIMD128; the threaded one adds `-pthread` and a pool of 8 workers, which is the cap the shim
+clamps `workerCount` to. `npm run bench -- --workers 4` runs the benchmark on it.
 
 ## License
 

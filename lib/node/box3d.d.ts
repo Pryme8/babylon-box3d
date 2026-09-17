@@ -35,7 +35,11 @@ export interface Box3DExports {
     _bx_GetVersion(): number;
 
     // world
-    _bx_CreateWorld(gx: number, gy: number, gz: number): number;
+    /** Workers this build can put on a step, counting the calling thread: 1 unless this is the threaded module. */
+    _bx_GetMaxWorkers(): number;
+    /** workerCount counts the calling thread and is clamped to _bx_GetMaxWorkers(); box3d builds its threads here. */
+    _bx_CreateWorld(gx: number, gy: number, gz: number, workerCount: number): number;
+    _bx_World_GetWorkerCount(world: number): number;
     _bx_DestroyWorld(world: number): void;
     _bx_World_Step(world: number, dt: number, subSteps: number): void;
     _bx_World_SetGravity(world: number, gx: number, gy: number, gz: number): void;
