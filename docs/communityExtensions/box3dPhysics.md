@@ -142,9 +142,41 @@ plugin.createParallelJoint(groundBody, chassisBody, Vector3.Up(), Vector3.Up(), 
 plugin.setShapeFilterGroup(boneShape, -ragdollIndex);
 ```
 
+## Performance
+
+Box3D, Havok and Oimo building the same scenes through Babylon's physics API, engine defaults, a fixed 1/60 s step and nothing rendered. Mean milliseconds per physics step, sleep on, median of 3 interleaved runs, AMD Ryzen 9 5900X, Babylon.js 9.26.1, `@babylonjs/havok` 1.3.14, oimo 1.0.9, node 24 (2026-09-17):
+
+| Scene | Box3D | Havok | Oimo |
+| --- | ---: | ---: | ---: |
+| Pyramid, 20 rows (210 boxes) | 0.09 | 0.51 | 6.3 |
+| Pyramid, 50 rows (1275 boxes) | 0.98 | 7.45, collapses | 68.2, collapses |
+| Pyramid, 100 rows (5050 boxes) | 28.2 | 27.5, collapses | 174, collapses |
+| Pile, 1000 boxes and spheres | 3.44 | 4.48 | 31.3 |
+| Pile, 4000 boxes and spheres | 20.9 | 22.0 | 183 |
+
+The same Box3D scenes on the threaded build, where Havok and Oimo have no equivalent:
+
+| Scene | 1 thread | 4 workers | 8 workers |
+| --- | ---: | ---: | ---: |
+| Pyramid, 20 rows (210 boxes) | 0.09 | 0.05 | 0.11 |
+| Pyramid, 50 rows (1275 boxes) | 0.98 | 0.42 | 0.34 |
+| Pyramid, 100 rows (5050 boxes) | 28.2 | 7.55 | 5.72 |
+| Pile, 1000 boxes and spheres | 3.44 | 1.38 | 1.65 |
+| Pile, 4000 boxes and spheres | 20.9 | 7.21 | 6.31 |
+
+Reading these fairly:
+
+- Box3D keeps every pyramid standing for 30 s of simulated time, up to 100 rows, where Babylon's default Havok setup has a 50 row pyramid flat within 10 s. The stability, not the clock, is the interesting column.
+- On one thread Havok's own world step is faster in the piles (15.7 ms against 19.5 ms at 4000 bodies). Box3D is ahead on the whole Babylon step because the plugin only syncs the bodies Box3D reports as moved.
+- Threads are for big scenes: the 210 box pyramid is slower with 8 workers than with none.
+- Every threaded run ends in the same state as the single threaded one, drift and pile height included.
+- Chrome tells the same story, with one difference: there Havok's full step wins the 4000 body pile on one thread.
+
+The harness is in the repository: `npm run bench`, `npm run bench -- --workers 4`, or `bench.html` in the demo, with full tables in [bench/results](https://github.com/Pryme8/babylon-box3d/tree/master/bench/results).
+
 ## Examples
 
-The repository contains a showcase with a 5000 box pyramid, Box3D's human ragdoll, a drivable car and a wrecking ball demolition: `npm run demo` in a checkout, then open `http://localhost:5178/?demo=pyramid|ragdolls|car|destruction`.
+The repository contains a showcase with a 5000 box pyramid, Box3D's human ragdoll, a drivable car and a wrecking ball demolition: `npm run demo` in a checkout, then open `http://localhost:5178/?demo=pyramid|ragdolls|car|destruction`. The dev server sends the cross origin isolation headers, so `?demo=pyramid&rows=100&workers=8` runs the 5050 box pyramid on threads and the overlay reports the worker count.
 
 ## Documentation
 
