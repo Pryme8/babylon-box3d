@@ -256,6 +256,10 @@ and mesh winding is flipped, exactly like the Havok plugin.
 | `test/` | vitest unit tests with a mocked wasm module, tests against the real wasm, node smoke test, and `packaged.test.ts` over the built `dist` and every loader in `lib` |
 | `bench/` | Box3D vs Havok vs Oimo benchmark: `npm run bench` (node) or `demo/bench.html` (browser), results in `bench/results` |
 
+The demo is published to GitHub Pages at https://pryme8.github.io/babylon-box3d/ by `.github/workflows/pages.yml`.
+Pages cannot send the isolation headers threads need, so `demo/public/coi-serviceworker.js` adds them from a service
+worker; that is only needed because of the host, and an app that controls its own headers does not want it.
+
 Demos: `pyramid` (Box3D's Large Pyramid benchmark, thin instances, `&rows=100` for 5050 boxes, click to explode),
 `ragdolls` (Erin's human ragdoll sliding down a chute), `car` (wheel joints, WASD), `destruction` (brick tower and
 wrecking ball), plus `stack`, `joints`, `terrain`, `compound` feature tests. Add `&ui=0` to hide the overlay.

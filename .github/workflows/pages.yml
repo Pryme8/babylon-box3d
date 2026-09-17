@@ -1,0 +1,53 @@
+# Builds the demo and publishes it to GitHub Pages: https://pryme8.github.io/babylon-box3d/
+#
+# The demo is served from a subfolder, so the build needs the matching base path. Threads work there through
+# demo/public/coi-serviceworker.js, which supplies the cross origin isolation headers Pages cannot send itself.
+name: Demo
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "demo/**"
+      - "src/**"
+      - "lib/**"
+      - "bench/**"
+      - "package.json"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# one deployment at a time, and let a newer push finish rather than cancelling it mid upload
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npx vite build --config demo/vite.config.ts --base=/babylon-box3d/
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: demo-dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
