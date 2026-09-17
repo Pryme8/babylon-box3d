@@ -98,24 +98,60 @@ The threads are worth asking for on scenes with thousands of awake bodies, where
 ### Playground
 
 ```javascript
-const load = (src) =>
-    new Promise((resolve) => {
-        const script = document.createElement("script");
-        script.src = src;
-        script.onload = resolve;
-        document.head.appendChild(script);
-    });
-await load("https://unpkg.com/babylon-box3d/lib/umd/box3d.umd.js");
-await load("https://unpkg.com/babylon-box3d/umd/babylon.box3d.min.js");
+// Box3D is not on the Playground's CDN list, so load the two script tags first. This is a complete scene:
+// paste it over the default one and hit run.
+const createScene = async function () {
+    const load = (src) =>
+        new Promise((resolve, reject) => {
+            const script = document.createElement("script");
+            script.src = src;
+            script.onload = resolve;
+            script.onerror = () => reject(new Error("could not load " + src));
+            document.head.appendChild(script);
+        });
+    await load("https://unpkg.com/babylon-box3d@0.4/lib/umd/box3d.umd.js");
+    await load("https://unpkg.com/babylon-box3d@0.4/umd/babylon.box3d.min.js");
 
-const box3d = await Box3D();
-scene.enablePhysics(new BABYLON.Vector3(0, -9.81, 0), new BABYLONBOX3D.Box3DPlugin(true, box3d));
+    const scene = new BABYLON.Scene(engine);
+    const camera = new BABYLON.ArcRotateCamera("camera", -Math.PI / 2.5, Math.PI / 3, 28, new BABYLON.Vector3(0, 4, 0), scene);
+    camera.attachControl(canvas, true);
+    new BABYLON.HemisphericLight("light", new BABYLON.Vector3(0, 1, 0), scene);
 
-const ground = BABYLON.MeshBuilder.CreateGround("ground", { width: 20, height: 20 }, scene);
-new BABYLON.PhysicsAggregate(ground, BABYLON.PhysicsShapeType.BOX, { mass: 0 }, scene);
-const sphere = BABYLON.MeshBuilder.CreateSphere("sphere", { diameter: 1 }, scene);
-sphere.position.y = 5;
-new BABYLON.PhysicsAggregate(sphere, BABYLON.PhysicsShapeType.SPHERE, { mass: 1, restitution: 0.5 }, scene);
+    const box3d = await Box3D();
+    const plugin = new BABYLONBOX3D.Box3DPlugin(true, box3d);
+    scene.enablePhysics(new BABYLON.Vector3(0, -9.81, 0), plugin);
+
+    const ground = BABYLON.MeshBuilder.CreateBox("ground", { width: 40, height: 1, depth: 40 }, scene);
+    ground.position.y = -0.5;
+    new BABYLON.PhysicsAggregate(ground, BABYLON.PhysicsShapeType.BOX, { mass: 0, friction: 0.7 }, scene);
+
+    // Box3D's own Large Pyramid benchmark, 20 rows of it: 2870 boxes that stay where they are put
+    const rows = 20;
+    const extent = 0.5;
+    for (let row = 0; row < rows; row++) {
+        const count = rows - row;
+        for (let i = 0; i < count; i++) {
+            for (let j = 0; j < count; j++) {
+                const box = BABYLON.MeshBuilder.CreateBox("box", { size: 1 }, scene);
+                box.position.set((2 * i - count + 1) * extent, (2 * row + 1) * extent, (2 * j - count + 1) * extent);
+                const material = new BABYLON.StandardMaterial("mat", scene);
+                material.diffuseColor = BABYLON.Color3.FromHSV((row * 15) % 360, 0.55, 0.9);
+                material.specularColor = new BABYLON.Color3(0.1, 0.1, 0.1);
+                box.material = material;
+                new BABYLON.PhysicsAggregate(box, BABYLON.PhysicsShapeType.BOX, { mass: 1, friction: 0.6 }, scene);
+            }
+        }
+    }
+
+    // click it to blow a crater in it
+    scene.onPointerDown = (event, pick) => {
+        if (pick.hit) {
+            plugin.explode(pick.pickedPoint, 8, 4000);
+        }
+    };
+
+    return scene;
+};
 ```
 
 ### Box3D specific features

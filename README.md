@@ -13,7 +13,8 @@ const box3d = await Box3D();
 scene.enablePhysics(new Vector3(0, -9.81, 0), new Box3DPlugin(true, box3d));
 ```
 
-Script tags (Playground, plain HTML):
+Script tags (Playground, plain HTML). A complete Playground scene is in
+[the documentation page](docs/communityExtensions/box3dPhysics.md#playground):
 
 ```html
 <script src="https://cdn.babylonjs.com/babylon.js"></script>
