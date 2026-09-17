@@ -1,0 +1,235 @@
+{
+  "environment": {
+    "date": "2026-09-17T21:59:21.078Z",
+    "cpu": "AMD Ryzen 9 5900X 12-Core Processor",
+    "cores": 24,
+    "platform": "win32 10.0.26200",
+    "node": "v24.13.0",
+    "babylon": "9.26.1",
+    "havok": "1.3.14",
+    "oimo": "1.0.9",
+    "box3d": "47d7f7cc7e09",
+    "timestep": "1/60 s fixed, one step per call",
+    "box3dWorkers": 4,
+    "settings": "engine defaults (Box3D 4 sub steps, Havok defaults, Oimo 8 iterations), friction 0.6, restitution 0, density 1000"
+  },
+  "repeats": 3,
+  "results": [
+    {
+      "scene": "pyramid-20",
+      "sceneLabel": "Pyramid, 20 rows",
+      "bodies": 210,
+      "engine": "box3d",
+      "sleep": true,
+      "workerCount": 4,
+      "buildMs": 8.229900000000043,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 0.048139666666670564,
+      "stepP50": 0.004699999999957072,
+      "stepP95": 0.3693000000000666,
+      "stepMax": 1.3587999999999738,
+      "engineMean": 0.04069016666666622,
+      "quality": {
+        "maxDrift": 0.02705125612707719,
+        "meanDrift": 0.013260956889099,
+        "topHeightRetained": 0.9986224052233573
+      }
+    },
+    {
+      "scene": "pyramid-20",
+      "sceneLabel": "Pyramid, 20 rows",
+      "bodies": 210,
+      "engine": "box3d",
+      "sleep": false,
+      "workerCount": 4,
+      "buildMs": 3.540200000000141,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 0.400439000000002,
+      "stepP50": 0.391399999999976,
+      "stepP95": 0.5680999999999585,
+      "stepMax": 0.9788999999998396,
+      "engineMean": 0.3709056666666614,
+      "quality": {
+        "maxDrift": 0.02715436037765554,
+        "meanDrift": 0.013338337796521445,
+        "topHeightRetained": 0.9986130151993189
+      }
+    },
+    {
+      "scene": "pyramid-50",
+      "sceneLabel": "Pyramid, 50 rows",
+      "bodies": 1275,
+      "engine": "box3d",
+      "sleep": true,
+      "workerCount": 4,
+      "buildMs": 18.69659999999999,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 0.4231024999999825,
+      "stepP50": 0.0072000000000116415,
+      "stepP95": 2.216200000000299,
+      "stepMax": 6.101100000000088,
+      "engineMean": 0.35235483333333223,
+      "quality": {
+        "maxDrift": 0.17267828942261268,
+        "meanDrift": 0.08416360635552561,
+        "topHeightRetained": 0.9965625339084201
+      }
+    },
+    {
+      "scene": "pyramid-50",
+      "sceneLabel": "Pyramid, 50 rows",
+      "bodies": 1275,
+      "engine": "box3d",
+      "sleep": false,
+      "workerCount": 4,
+      "buildMs": 21.685199999999895,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 1.764210499999994,
+      "stepP50": 1.602400000000216,
+      "stepP95": 2.83620000000019,
+      "stepMax": 4.675899999999729,
+      "engineMean": 1.5210841666666601,
+      "quality": {
+        "maxDrift": 0.17347186682397908,
+        "meanDrift": 0.08433119964993238,
+        "topHeightRetained": 0.9965511283489189
+      }
+    },
+    {
+      "scene": "pyramid-100",
+      "sceneLabel": "Pyramid, 100 rows",
+      "bodies": 5050,
+      "engine": "box3d",
+      "sleep": true,
+      "workerCount": 4,
+      "buildMs": 84.94629999999961,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 7.552103166666651,
+      "stepP50": 7.207599999999729,
+      "stepP95": 11.329899999998815,
+      "stepMax": 21.67870000000039,
+      "engineMean": 5.809093166666683,
+      "quality": {
+        "maxDrift": 0.6900644147453077,
+        "meanDrift": 0.33788084366707666,
+        "topHeightRetained": 0.9932002542006909
+      }
+    },
+    {
+      "scene": "pyramid-100",
+      "sceneLabel": "Pyramid, 100 rows",
+      "bodies": 5050,
+      "engine": "box3d",
+      "sleep": false,
+      "workerCount": 4,
+      "buildMs": 104.88060000000041,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 9.147721833333357,
+      "stepP50": 8.822000000000116,
+      "stepP95": 12.994000000002416,
+      "stepMax": 20.84519999999975,
+      "engineMean": 7.06750583333335,
+      "quality": {
+        "maxDrift": 0.6934606917196542,
+        "meanDrift": 0.3392004722105754,
+        "topHeightRetained": 0.9932014810380025
+      }
+    },
+    {
+      "scene": "pile-1000",
+      "sceneLabel": "Pile, 1000 boxes and spheres",
+      "bodies": 1000,
+      "engine": "box3d",
+      "sleep": true,
+      "workerCount": 4,
+      "buildMs": 21.994400000003225,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 1.382159666666618,
+      "stepP50": 1.2360999999946216,
+      "stepP95": 2.1664999999993597,
+      "stepMax": 5.762599999994563,
+      "engineMean": 1.2546115000001252,
+      "quality": {
+        "escaped": 0,
+        "pileHeight": 2.282003164291382
+      }
+    },
+    {
+      "scene": "pile-1000",
+      "sceneLabel": "Pile, 1000 boxes and spheres",
+      "bodies": 1000,
+      "engine": "box3d",
+      "sleep": false,
+      "workerCount": 4,
+      "buildMs": 10.985099999998056,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 1.1342405000000022,
+      "stepP50": 1.0195000000021537,
+      "stepP95": 1.6999999999970896,
+      "stepMax": 4.333599999998114,
+      "engineMean": 1.0321049999998892,
+      "quality": {
+        "escaped": 0,
+        "pileHeight": 2.2817394733428955
+      }
+    },
+    {
+      "scene": "pile-4000",
+      "sceneLabel": "Pile, 4000 boxes and spheres",
+      "bodies": 4000,
+      "engine": "box3d",
+      "sleep": true,
+      "workerCount": 4,
+      "buildMs": 41.9771999999939,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 7.210366333333356,
+      "stepP50": 6.7185000000026776,
+      "stepP95": 10.769399999997404,
+      "stepMax": 27.052600000002712,
+      "engineMean": 5.8366896666668255,
+      "quality": {
+        "escaped": 0,
+        "pileHeight": 8.355522155761719
+      }
+    },
+    {
+      "scene": "pile-4000",
+      "sceneLabel": "Pile, 4000 boxes and spheres",
+      "bodies": 4000,
+      "engine": "box3d",
+      "sleep": false,
+      "workerCount": 4,
+      "buildMs": 69.30949999999575,
+      "stepsRequested": 600,
+      "stepsRun": 600,
+      "stoppedEarly": false,
+      "stepMean": 9.899747166666845,
+      "stepP50": 9.724100000006729,
+      "stepP95": 13.498599999998987,
+      "stepMax": 29.974499999996624,
+      "engineMean": 7.897605499999906,
+      "quality": {
+        "escaped": 0,
+        "pileHeight": 8.355522155761719
+      }
+    }
+  ]
+}

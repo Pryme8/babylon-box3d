@@ -455,11 +455,11 @@ const RequiredNativeExports = [
     "_bx_Body_SetMassDataFull", "_bx_Body_SetMotionLocks", "_bx_Body_SetShape", "_bx_Body_SetTargetTransform", "_bx_Body_SetTransform",
     "_bx_Body_SetType", "_bx_Body_SyncShapeDesc", "_bx_ComputeAlignedFrameB", "_bx_ContactEventsPtr", "_bx_CreateBody", "_bx_CreateJoint",
     "_bx_CreateWorld", "_bx_DebugIndexCount", "_bx_DebugIndicesPtr", "_bx_DebugPositionsPtr", "_bx_DestroyBody", "_bx_DestroyJoint",
-    "_bx_DestroyWorld", "_bx_GetRejectedSlotCount", "_bx_Joint_EnableLimit", "_bx_Joint_EnableMotor", "_bx_Joint_EnableSpring", "_bx_Joint_IsValid",
+    "_bx_DestroyWorld", "_bx_GetMaxWorkers", "_bx_GetRejectedSlotCount", "_bx_Joint_EnableLimit", "_bx_Joint_EnableMotor",
+    "_bx_Joint_EnableSpring", "_bx_Joint_IsValid",
     "_bx_Joint_SetCollideConnected", "_bx_Joint_SetConstraintTuning", "_bx_Joint_SetLimits", "_bx_Joint_SetMaxMotorForce",
     "_bx_Joint_SetMotorSpeed", "_bx_Joint_SetSphericalMotor", "_bx_Joint_SetSphericalTarget", "_bx_Joint_SetSpring", "_bx_Joint_SetTarget",
     "_bx_Joint_SetTwistLimits", "_bx_Joint_UpdateMotorFrame", "_bx_Joint_WakeBodies", "_bx_MoveEventsPtr", "_bx_RayHitsPtr", "_bx_Scratch",
-    "_bx_GetMaxWorkers", "_bx_World_GetWorkerCount",
     "_bx_SensorEventsPtr", "_bx_ShapeDesc_AddChild", "_bx_ShapeDesc_BuildDebugGeometry", "_bx_ShapeDesc_CreateBox", "_bx_ShapeDesc_CreateCapsule",
     "_bx_ShapeDesc_CreateContainer", "_bx_ShapeDesc_CreateCylinder", "_bx_ShapeDesc_CreateHeightField", "_bx_ShapeDesc_CreateHull",
     "_bx_ShapeDesc_CreateMesh", "_bx_ShapeDesc_CreateSphere", "_bx_ShapeDesc_Destroy", "_bx_ShapeDesc_GetAABB", "_bx_ShapeDesc_GetCategoryBits",
@@ -467,7 +467,8 @@ const RequiredNativeExports = [
     "_bx_ShapeDesc_GetRestitution", "_bx_ShapeDesc_RemoveChild", "_bx_ShapeDesc_SetDensity", "_bx_ShapeDesc_SetFilter", "_bx_ShapeDesc_SetGroup",
     "_bx_ShapeDesc_SetMaterial", "_bx_ShapeDesc_SetRollingResistance", "_bx_ShapeDesc_SetSensor", "_bx_World_CastRay", "_bx_World_EnableContinuous",
     "_bx_World_EnableSleeping", "_bx_World_Explode", "_bx_World_GetContactEvents", "_bx_World_GetMaximumLinearSpeed", "_bx_World_GetMoveEvents",
-    "_bx_World_GetSensorEvents", "_bx_World_GetStats", "_bx_World_SetGravity", "_bx_World_SetMaximumLinearSpeed", "_bx_World_Step"
+    "_bx_World_GetSensorEvents", "_bx_World_GetStats", "_bx_World_GetWorkerCount", "_bx_World_SetGravity", "_bx_World_SetMaximumLinearSpeed",
+    "_bx_World_Step"
 ];
 
 /**

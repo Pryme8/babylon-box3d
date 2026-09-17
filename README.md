@@ -98,7 +98,10 @@ it. `CanUseBox3DThreads()` reports whether this page can run them.
 
 Everything degrades rather than breaking. On a page that is not isolated, `threads: "auto"` loads the single threaded
 build, `workerCount` is clamped to 1 and the plugin says so once in the console. `threads: true` throws instead, for
-an app that would rather find out than quietly run on one thread.
+an app that would rather find out than quietly run on one thread. Isolation is a hosting decision: a static host that
+cannot add response headers (GitHub Pages, for one) can never run them, and the headers also block cross origin
+resources that do not opt in with CORS or `Cross-Origin-Resource-Policy`, which is worth checking before turning them
+on for a whole site. `npm run demo` sets both headers, so the showcase runs threads with `?workers=4`.
 
 What the threads do and do not change:
 
@@ -120,8 +123,9 @@ reach that. The shim hands box3d its own task system instead (`wasm/box3d_shim.c
 
 ### Tuning
 
-- `subStepCount` (default 4, box3d's own) is the solver's sub steps per step. Tall stacks need it; 2 roughly halves
-  solver time for scenes that are mostly loose bodies, 8 buys stiffness in exchange for time.
+- `subStepCount` (default 4, box3d's own) is the solver's sub steps per step: `new Box3DPlugin(true, box3d, {
+  subStepCount: 2 })`, or `plugin.subStepCount` at any time. Tall stacks need the 4; 2 roughly halves solver time for
+  scenes that are mostly loose bodies, 8 buys stiffness in exchange for time.
 - `plugin.setSleepingEnabled(false)` measures raw throughput but costs a lot in a settled scene: sleeping is why a
   standing pyramid is nearly free.
 - Contact events cross into JavaScript one record per contact per step. A body nothing listens to should not be
@@ -260,22 +264,41 @@ wrecking ball), plus `stack`, `joints`, `terrain`, `compound` feature tests. Add
 Box3D, Havok and Oimo build the same scenes through Babylon's regular physics API (v2 for Box3D and Havok, v1 for
 Oimo), with engine defaults, a fixed 1/60 s step and nothing rendered. "Step" is Babylon's whole physics step,
 "engine" is only the engine's own world step. Median of 3 interleaved runs after a warm up, AMD Ryzen 9 5900X,
-Babylon.js 8.56.2, @babylonjs/havok 1.3.14, oimo 1.0.9. Mean milliseconds per step, sleep on:
+Babylon.js 9.26.1, @babylonjs/havok 1.3.14, oimo 1.0.9, node 24. Mean milliseconds per step, sleep on, every engine
+on one thread (2026-09-17):
 
 | Scene | Box3D | Havok | Oimo |
 | --- | ---: | ---: | ---: |
-| Pyramid, 20 rows (210 boxes) | 0.09 | 0.47 | 5.94 |
-| Pyramid, 50 rows (1275 boxes) | 0.89 | 7.05, collapses | 69.4, collapses |
-| Pyramid, 100 rows (5050 boxes) | 31.7 | 29.9, collapses | 219, collapses |
-| Pile, 1000 boxes and spheres | 3.45 | 4.26 | 33.3 |
-| Pile, 4000 boxes and spheres | 22.0 | 23.8 | 196 |
+| Pyramid, 20 rows (210 boxes) | 0.09 | 0.51 | 6.3 |
+| Pyramid, 50 rows (1275 boxes) | 0.98 | 7.45, collapses | 68.2, collapses |
+| Pyramid, 100 rows (5050 boxes) | 28.2 | 27.5, collapses | 174, collapses |
+| Pile, 1000 boxes and spheres | 3.44 | 4.48 | 31.3 |
+| Pile, 4000 boxes and spheres | 20.9 | 22.0 | 183 |
+
+The same Box3D scenes on the threaded build. Havok and Oimo have no equivalent, so this is time the other two cannot
+take back:
+
+| Scene | 1 thread | 4 workers | 8 workers |
+| --- | ---: | ---: | ---: |
+| Pyramid, 20 rows (210 boxes) | 0.09 | 0.05 | 0.11 |
+| Pyramid, 50 rows (1275 boxes) | 0.98 | 0.42 | 0.34 |
+| Pyramid, 100 rows (5050 boxes) | 28.2 | 7.55 | 5.72 |
+| Pile, 1000 boxes and spheres | 3.44 | 1.38 | 1.65 |
+| Pile, 4000 boxes and spheres | 20.9 | 7.21 | 6.31 |
 
 - Box3D keeps every pyramid standing for 30 s of simulated time, up to 100 rows. With Babylon's default Havok setup
   a 30 row pyramid is flat within 30 s and a 50 row one within 10 s (`bench/results/pyramid-stability-*.md`).
-- In the piles Havok's own world step is faster (17.7 ms vs 20.8 ms at 4000 bodies). Box3D's full Babylon step is
-  faster because the plugin only syncs bodies that Box3D reports as moved.
-- Chrome gives the same picture as node (`bench/results/chrome-*.md`). Full tables, including sleep off, p95 and
-  max step times, are in `bench/results`. Run `npm run bench` or open `bench.html` from `npm run demo` to reproduce.
+- In the piles Havok's own world step is faster on one thread (15.7 ms vs 19.5 ms at 4000 bodies). Box3D's full
+  Babylon step is faster because the plugin only syncs bodies that Box3D reports as moved.
+- The 210 box pyramid is slower with 8 workers than with none, and the 1000 body pile is better at 4 than at 8:
+  splitting a step is not free, and the scenes that pay for it are the big ones.
+- Every threaded run ends in the same state as the single threaded one. The result column in all three tables is
+  identical, drift and pile height included, which is the determinism claim holding at 5050 bodies.
+- Chrome tells the same story, threads included: 23.6 ms to 7.5 ms on the 100 row pyramid, 23.6 ms to 6.8 ms on the
+  4000 body pile at 8 workers. The one place it differs is that pile on one thread, where Chrome puts Havok's full
+  step ahead of Box3D's (20.6 ms against 23.6 ms) while node has them the other way round (`bench/results/chrome-*.md`).
+- Full tables, including sleep off, p95 and max step times, are in `bench/results`. Run `npm run bench`,
+  `npm run bench -- --workers 4`, or open `bench.html` from `npm run demo` and set the worker count there.
 
 ## Building
 

@@ -159,6 +159,36 @@ describe("threaded build", () => {
         engine.dispose();
     });
 
+    it("takes the sub step count from the options", () => {
+        const engine = new NullEngine();
+        const scene = new Scene(engine);
+        const plugin = new Box3DPlugin(false, plain, { subStepCount: 2 });
+        expect(plugin.subStepCount).toBe(2);
+        // box3d's default, which is what a plugin built without options keeps
+        expect(new Box3DPlugin(false, plain).subStepCount).toBe(4);
+        scene.dispose();
+        engine.dispose();
+    });
+
+    it("falls back to the single threaded build where the page cannot run threads", async () => {
+        const { CanUseBox3DThreads, LoadBox3D } = (await import("../dist/index.js")) as any;
+        const isolation = Object.getOwnPropertyDescriptor(globalThis, "crossOriginIsolated");
+        try {
+            Object.defineProperty(globalThis, "crossOriginIsolated", { value: false, configurable: true });
+            expect(CanUseBox3DThreads()).toBe(false);
+            // "auto" is the one an app ships: it takes what it can get
+            await expect(LoadBox3D({ threads: true })).rejects.toThrow(/cross-origin-embedder-policy/i);
+        } finally {
+            if (isolation) {
+                Object.defineProperty(globalThis, "crossOriginIsolated", isolation);
+            } else {
+                delete (globalThis as any).crossOriginIsolated;
+            }
+        }
+        // node has SharedArrayBuffer and no isolation flag to fail
+        expect(CanUseBox3DThreads()).toBe(true);
+    });
+
     it("exports the same entry points as the single threaded build", () => {
         const names = (module_: any) =>
             Object.keys(module_)
