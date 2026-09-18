@@ -3,10 +3,12 @@
 [Box3D](https://github.com/erincatto/box3d) physics for Babylon.js. Box3D is Erin Catto's 3D successor to Box2D v3:
 an MIT licensed rigid body engine with a soft step solver, continuous collision, cross platform determinism and
 SIMD. This extension ships the engine compiled to WebAssembly plus `Box3DPlugin`, an implementation of Babylon's
-physics v2 plugin interface, so it drops in wherever the Havok plugin is used.
+physics v2 plugin interface. It supports most of the Physics V2 API, so scenes written for the Havok plugin generally
+run on it unchanged; [What is covered](#what-is-covered) lists where it differs.
 
 ```ts
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import "@babylonjs/core/Physics/joinedPhysicsEngineComponent"; // adds scene.enablePhysics
 import { Box3D, Box3DPlugin } from "babylon-box3d";
 
 const box3d = await Box3D();
@@ -21,10 +23,27 @@ Script tags (Playground, plain HTML). A complete Playground scene is in
 <script src="https://unpkg.com/babylon-box3d/lib/umd/box3d.umd.js"></script>
 <script src="https://unpkg.com/babylon-box3d/umd/babylon.box3d.min.js"></script>
 <script>
-    const box3d = await Box3D();
-    scene.enablePhysics(new BABYLON.Vector3(0, -9.81, 0), new BABYLONBOX3D.Box3DPlugin(true, box3d));
+    // a classic script cannot use await at the top level, so the setup runs in an async function
+    (async () => {
+        const box3d = await Box3D();
+        scene.enablePhysics(new BABYLON.Vector3(0, -9.81, 0), new BABYLONBOX3D.Box3DPlugin(true, box3d));
+        // create physics bodies from here on
+    })();
 </script>
 ```
+
+### Without npm or a build step
+
+Like Havok's UMD build, this runs from plain files in a folder. Download these three and put them next to your page:
+
+- [box3d.umd.js](https://unpkg.com/babylon-box3d@0.4.0/lib/umd/box3d.umd.js), the WebAssembly loader (global `Box3D`)
+- [box3d.umd.wasm](https://unpkg.com/babylon-box3d@0.4.0/lib/umd/box3d.umd.wasm), the engine, found next to the loader
+- [babylon.box3d.min.js](https://unpkg.com/babylon-box3d@0.4.0/umd/babylon.box3d.min.js), the plugin (global `BABYLONBOX3D`)
+
+Then load them after `babylon.js` with the same three script tags as above, pointing at the local files. The folder
+has to be opened through a web server rather than by double clicking the page: browsers refuse to load a `.wasm` from
+`file://`, and Havok's wasm has the same limit. Any static server works, VS Code's Live Server or
+`python -m http.server` in that folder among them; nothing runs on Node.
 
 The wasm is fetched next to the loader script. With a bundler pass `locateFile`, for example with vite:
 
@@ -85,6 +104,7 @@ Cross-Origin-Embedder-Policy: require-corp
 
 ```ts
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
+import "@babylonjs/core/Physics/joinedPhysicsEngineComponent";
 import { LoadBox3D, Box3DPlugin } from "babylon-box3d";
 
 // "auto" uses the threaded build where the page allows it and the single threaded one everywhere else
@@ -100,7 +120,8 @@ it. `CanUseBox3DThreads()` reports whether this page can run them.
 Everything degrades rather than breaking. On a page that is not isolated, `threads: "auto"` loads the single threaded
 build, `workerCount` is clamped to 1 and the plugin says so once in the console. `threads: true` throws instead, for
 an app that would rather find out than quietly run on one thread. Isolation is a hosting decision: a static host that
-cannot add response headers (GitHub Pages, for one) can never run them, and the headers also block cross origin
+cannot add response headers (GitHub Pages, for one) needs a service worker to add them, the way the hosted demo does
+(`demo/public/coi-serviceworker.js`), and the headers also block cross origin
 resources that do not opt in with CORS or `Cross-Origin-Resource-Policy`, which is worth checking before turning them
 on for a whole site. `npm run demo` sets both headers, so the showcase runs threads with `?workers=4`.
 
