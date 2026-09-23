@@ -270,6 +270,7 @@ and mesh winding is flipped, exactly like the Havok plugin.
 | `wasm/box3d_shim.c` | C shim: flat, handle based API over box3d (`bx_*` functions) |
 | `wasm/build.mjs` | emcc build for `lib/esm`, `lib/umd` (global `Box3D`), `lib/node` and the threaded pair |
 | `lib/` | committed wasm builds and typings, `UPSTREAM_COMMIT` is the box3d commit |
+| `wasm/patches/` | changes to Box3D itself, applied in name order to a copy of the box3d checkout at build time, see [Patches to Box3D](#patches-to-box3d) |
 | `lib/esm-threads`, `lib/node-threads` | the same module built with pthreads, see [Threads](#threads) |
 | `umd/` | plugin bundle for script tags (global `BABYLONBOX3D`), built by `npm run build:umd` |
 | `demo/` | vite showcase: `npm run demo`, then `http://localhost:5178/?demo=pyramid` |
@@ -344,6 +345,19 @@ with Havok and compare, which is what pins the Havok compatible behaviour down.
 threaded one in `lib/esm-threads` and `lib/node-threads`. Add `--no-threads` to skip the second while iterating on the
 shim. Both are wasm SIMD128; the threaded one adds `-pthread` and a pool of 8 workers, which is the cap the shim
 clamps `workerCount` to. `npm run bench -- --workers 4` runs the benchmark on it.
+
+## Patches to Box3D
+
+The wasm is built from the box3d commit in `UPSTREAM_COMMIT` plus the patches in `wasm/patches`. `npm run build:wasm`
+copies the checkout's `src` and `include` into `build/box3d-src` and applies the patches there, so the checkout itself
+stays exactly upstream's commit, and a change to the patch set rebuilds every object.
+
+| patch | what it changes |
+| --- | --- |
+| `0001-broad-phase-prunes-by-mask.patch` | A shape that moved queries the broad phase with its own mask bits instead of every category (unless it is in a positive group, which overrides masks). A body whose shapes are filtered against each other then skips its own subtree instead of visiting every sibling shape before rejecting it. Which pairs collide does not change. |
+| `0002-continuous-per-body.patch` | `b3Body_EnableContinuous` and `b3Body_IsContinuousEnabled` (shim: `bx_Body_EnableContinuous`, `bx_Body_IsContinuousEnabled`): continuous collision switched for one body. The world's switch still applies. A body made of many small shapes is swept shape by shape whenever its smallest shape moves fast enough, which can cost more than the rest of the step. |
+
+`test/wasm.patches.test.ts` covers both. Neither has been offered upstream.
 
 ## License
 

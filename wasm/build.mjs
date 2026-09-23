@@ -7,7 +7,8 @@
 // Requirements:
 //   * Emscripten SDK: set EMSDK, or keep a checkout at ../emsdk next to this repository.
 //   * Box3D sources: set BOX3D_DIR, or keep a checkout at ../box3d next to this repository.
-//     The commit that gets built is recorded in UPSTREAM_COMMIT.
+//     The commit that gets built is recorded in UPSTREAM_COMMIT. The patches in wasm/patches are applied, in
+//     name order, to a copy of its sources in build/box3d-src, so the checkout itself stays that commit.
 //
 // Outputs (all committed so consumers never need the toolchain):
 //   lib/esm/box3d.js + box3d.wasm       ES module for browsers and bundlers (default export = factory)
@@ -19,8 +20,19 @@
 //                                       than the default. There is no threaded UMD build: the script tag case is the
 //                                       Playground and plain pages, and those are not isolated.
 
-import { spawn } from "child_process";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "fs";
+import { spawn, spawnSync } from "child_process";
+import { createHash } from "crypto";
+import {
+    copyFileSync,
+    existsSync,
+    mkdirSync,
+    readdirSync,
+    readFileSync,
+    rmSync,
+    statSync,
+    unlinkSync,
+    writeFileSync,
+} from "fs";
 import { cpus } from "os";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -50,6 +62,69 @@ const Box3dDir = Resolve("BOX3D_DIR", "box3d", "include/box3d/box3d.h");
 const EmscriptenDir = path.join(EmsdkDir, "upstream", "emscripten");
 const Emcc = path.join(EmscriptenDir, IsWindows ? "emcc.exe" : "emcc");
 
+// Box3D as built: the checkout itself, or a patched copy of it when wasm/patches holds any.
+const PatchDir = path.join(RepoRoot, "wasm", "patches");
+const Patches = existsSync(PatchDir) ? readdirSync(PatchDir).filter((name) => name.endsWith(".patch")).sort() : [];
+const SourceDir = Patches.length ? path.join(RepoRoot, "build", "box3d-src") : Box3dDir;
+
+// Objects only track their own .c file, so a change to the patch set (headers included) rebuilds everything.
+const PatchStamp = createHash("sha256")
+    .update(Patches.map((name) => `${name}\n${readFileSync(path.join(PatchDir, name), "utf8").replace(/\r\n/g, "\n")}`).join("\n"))
+    .digest("hex");
+
+function ListFiles(root, rel = "") {
+    return readdirSync(path.join(root, rel), { withFileTypes: true }).flatMap((entry) => {
+        const child = path.join(rel, entry.name);
+        return entry.isDirectory() ? ListFiles(root, child) : [child];
+    });
+}
+
+// Copies Box3D's src and include into a staging folder with LF line endings (the patches are LF, and a checkout
+// with core.autocrlf is not), applies the patches there, then writes into build/box3d-src only the files whose
+// text changed, so the sources nothing touched keep their objects.
+function PrepareSources() {
+    if (!Patches.length) {
+        return;
+    }
+    const staging = path.join(RepoRoot, "build", "box3d-staging");
+    rmSync(staging, { recursive: true, force: true });
+    for (const sub of ["src", "include"]) {
+        for (const rel of ListFiles(path.join(Box3dDir, sub))) {
+            const target = path.join(staging, sub, rel);
+            mkdirSync(path.dirname(target), { recursive: true });
+            writeFileSync(target, readFileSync(path.join(Box3dDir, sub, rel), "utf8").replace(/\r\n/g, "\n"));
+        }
+    }
+    const directory = path.relative(RepoRoot, staging).split(path.sep).join("/");
+    for (const name of Patches) {
+        const result = spawnSync("git", ["apply", `--directory=${directory}`, path.join(PatchDir, name)], {
+            cwd: RepoRoot,
+            encoding: "utf8",
+        });
+        if (result.status !== 0) {
+            throw new Error(`wasm/patches/${name} does not apply to ${Box3dDir}:\n${result.stderr}`);
+        }
+        console.log(`  patch ${name}`);
+    }
+    const kept = new Set(ListFiles(staging));
+    for (const rel of kept) {
+        const target = path.join(SourceDir, rel);
+        const text = readFileSync(path.join(staging, rel));
+        if (!existsSync(target) || !readFileSync(target).equals(text)) {
+            mkdirSync(path.dirname(target), { recursive: true });
+            writeFileSync(target, text);
+        }
+    }
+    if (existsSync(SourceDir)) {
+        for (const rel of ListFiles(SourceDir)) {
+            if (!kept.has(rel)) {
+                unlinkSync(path.join(SourceDir, rel));
+            }
+        }
+    }
+    rmSync(staging, { recursive: true, force: true });
+}
+
 // emcc needs python and node on the PATH. Prefer the ones shipped with the SDK.
 function SdkToolDirs(sub) {
     const root = path.join(EmsdkDir, sub);
@@ -75,15 +150,15 @@ const CommonFlags = [
     "-msse2",
     "-ffp-contract=off",
     "-fno-exceptions",
-    `-I${path.join(Box3dDir, "include")}`,
-    `-I${path.join(Box3dDir, "src")}`,
+    `-I${path.join(SourceDir, "include")}`,
+    `-I${path.join(SourceDir, "src")}`,
     ...(Debug ? ["-O1", "-g", "-DB3_ENABLE_ASSERT"] : ["-O3", "-DNDEBUG"]),
 ];
 
 const Sources = [
     ...readdirSync(path.join(Box3dDir, "src"))
         .filter((name) => name.endsWith(".c"))
-        .map((name) => path.join(Box3dDir, "src", name)),
+        .map((name) => path.join(SourceDir, "src", name)),
     path.join(RepoRoot, "wasm", "box3d_shim.c"),
 ];
 
@@ -105,7 +180,12 @@ function Run(args) {
 
 // Threads change the generated code (atomics, thread local storage), so the two builds cannot share object files.
 async function CompileAll(objDir, extraFlags) {
+    const stampPath = path.join(objDir, "patches.stamp");
+    if (existsSync(objDir) && (!existsSync(stampPath) || readFileSync(stampPath, "utf8") !== PatchStamp)) {
+        rmSync(objDir, { recursive: true, force: true });
+    }
     mkdirSync(objDir, { recursive: true });
+    writeFileSync(stampPath, PatchStamp);
     const jobs = Sources.map((source) => {
         const object = path.join(objDir, path.basename(source, ".c") + ".o");
         return async () => {
@@ -192,7 +272,8 @@ function CopyTypes(dirs) {
 
 const BuildDir = path.join(RepoRoot, "build", Debug ? "debug" : "release");
 
-console.log(`Box3D: ${Box3dDir}`);
+console.log(`Box3D: ${Box3dDir}${Patches.length ? ` + ${Patches.length} patches` : ""}`);
+PrepareSources();
 console.log(`Emscripten: ${EmscriptenDir}`);
 const objects = await CompileAll(BuildDir, []);
 await Link(objects, { output: path.join(RepoRoot, "lib", "esm", "box3d.js"), environment: "web,worker", es6: true });

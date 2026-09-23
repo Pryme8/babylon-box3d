@@ -1,0 +1,116 @@
+diff --git a/include/box3d/box3d.h b/include/box3d/box3d.h
+index 2e82590..8215b0b 100644
+--- a/include/box3d/box3d.h
++++ b/include/box3d/box3d.h
+@@ -713,6 +713,16 @@ B3_API void b3Body_SetBullet( b3BodyId bodyId, bool flag );
+ /// Is this body a bullet?
+ B3_API bool b3Body_IsBullet( b3BodyId bodyId );
+ 
++/// Enable or disable continuous collision for this body. It is on by default, and the world's setting
++/// still applies. With it off the body is never swept, so it can pass through thin static shapes
++/// when it moves further in a step than its speculative margin. A body made of many small shapes
++/// is swept shape by shape whenever its smallest shape moves fast enough, which can cost more
++/// than the rest of the step.
++B3_API void b3Body_EnableContinuous( b3BodyId bodyId, bool flag );
++
++/// Is continuous collision enabled for this body?
++B3_API bool b3Body_IsContinuousEnabled( b3BodyId bodyId );
++
+ /// Allow this body to rotate fast. Useful for axially symmetric bodies, such as vehicle wheels.
+ /// Normally rotation speed is clamped to improve CCD. However, this clamping is unnecessary for
+ /// bodies that only rotate fast around an axis of symmetry.
+diff --git a/src/body.c b/src/body.c
+index f517e7b..5688c9b 100644
+--- a/src/body.c
++++ b/src/body.c
+@@ -2384,6 +2384,34 @@ bool b3Body_IsBullet( b3BodyId bodyId )
+ 	return ( body->flags & b3_isBullet ) != 0;
+ }
+ 
++void b3Body_EnableContinuous( b3BodyId bodyId, bool flag )
++{
++	b3World* world = b3GetUnlockedWorld( bodyId.world0 );
++	if ( world == NULL )
++	{
++		return;
++	}
++
++	B3_REC( world, BodyEnableContinuous, bodyId, flag );
++
++	b3Body* body = b3GetBodyFullId( world, bodyId );
++	if ( flag )
++	{
++		body->flags &= ~b3_disableContinuous;
++	}
++	else
++	{
++		body->flags |= b3_disableContinuous;
++	}
++}
++
++bool b3Body_IsContinuousEnabled( b3BodyId bodyId )
++{
++	b3World* world = b3GetWorld( bodyId.world0 );
++	b3Body* body = b3GetBodyFullId( world, bodyId );
++	return ( body->flags & b3_disableContinuous ) == 0;
++}
++
+ void b3Body_AllowFastRotation( b3BodyId bodyId, bool flag )
+ {
+ 	b3World* world = b3GetUnlockedWorld( bodyId.world0 );
+diff --git a/src/body.h b/src/body.h
+index ae90105..fb5af42 100644
+--- a/src/body.h
++++ b/src/body.h
+@@ -61,6 +61,9 @@ enum b3BodyFlags
+ 	// data still hasn't been set.
+ 	b3_dirtyMass = 0x00008000,
+ 
++	// Continuous collision is off for this body.
++	b3_disableContinuous = 0x00010000,
++
+ 	// All lock flags
+ 	b3_allLocks = b3_lockLinearX | b3_lockLinearY | b3_lockLinearZ | b3_lockAngularX | b3_lockAngularY | b3_lockAngularZ,
+ 
+diff --git a/src/recording_ops.inl b/src/recording_ops.inl
+index 3f0cf42..b12a4dc 100644
+--- a/src/recording_ops.inl
++++ b/src/recording_ops.inl
+@@ -69,6 +69,7 @@ B3_REC_OP( 0x37, BodySetBullet, RET_NONE, ARG( BODYID, body ) ARG( BOOL, flag )
+ B3_REC_OP( 0x38, BodyEnableContactRecycling, RET_NONE, ARG( BODYID, body ) ARG( BOOL, flag ) )
+ B3_REC_OP( 0x39, BodyEnableHitEvents, RET_NONE, ARG( BODYID, body ) ARG( BOOL, flag ) )
+ B3_REC_OP( 0x3A, BodyAllowFastRotation, RET_NONE, ARG( BODYID, body ) ARG( BOOL, flag ) )
++B3_REC_OP( 0x3B, BodyEnableContinuous, RET_NONE, ARG( BODYID, body ) ARG( BOOL, flag ) )
+ 
+ // Shape create/destroy
+ B3_REC_OP( 0x40, CreateSphereShape, RET_SHAPEID, ARG( BODYID, body ) ARG( SHAPEDEF, def ) ARG( SPHERE, sphere ) )
+diff --git a/src/recording_replay.c b/src/recording_replay.c
+index d1a40bc..234f306 100644
+--- a/src/recording_replay.c
++++ b/src/recording_replay.c
+@@ -964,6 +964,11 @@ static void b3RecDispatch_BodyAllowFastRotation( const b3RecArgs_BodyAllowFastRo
+ 	b3Body_AllowFastRotation( b3RecMakeBodyId( rdr, a->body ), a->flag );
+ }
+ 
++static void b3RecDispatch_BodyEnableContinuous( const b3RecArgs_BodyEnableContinuous* a, b3RecReader* rdr )
++{
++	b3Body_EnableContinuous( b3RecMakeBodyId( rdr, a->body ), a->flag );
++}
++
+ static void b3RecDispatch_BodyEnableContactRecycling( const b3RecArgs_BodyEnableContactRecycling* a, b3RecReader* rdr )
+ {
+ 	b3Body_EnableContactRecycling( b3RecMakeBodyId( rdr, a->body ), a->flag );
+diff --git a/src/solver.c b/src/solver.c
+index d8aace0..0de9612 100644
+--- a/src/solver.c
++++ b/src/solver.c
+@@ -758,7 +758,8 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
+ 
+ 			const float safetyFactor = 0.5f;
+ 			float maxMotion = b3MaxFloat( maxDeltaPosition, maxVelocity * timeStep );
+-			if ( body->type == b3_dynamicBody && enableContinuous && maxMotion > safetyFactor * sim->minExtent )
++			if ( body->type == b3_dynamicBody && enableContinuous && ( body->flags & b3_disableContinuous ) == 0 &&
++				 maxMotion > safetyFactor * sim->minExtent )
+ 			{
+ 				// This flag is only retained for debug draw
+ 				sim->flags |= b3_isFast;

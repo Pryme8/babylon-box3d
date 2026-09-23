@@ -1,0 +1,37 @@
+diff --git a/src/broad_phase.c b/src/broad_phase.c
+index a369ca6..6145b97 100644
+--- a/src/broad_phase.c
++++ b/src/broad_phase.c
+@@ -360,24 +360,26 @@ static void b3FindPairsTask( int startIndex, int endIndex, int workerIndex, void
+ 		B3_VALIDATE( world->shapes.data[queryContext.queryShapeIndex].type != b3_compoundShape );
+ 
+ 		// Query trees. Only dynamic proxies collide with kinematic and static proxies.
+-		// Using B3_DEFAULT_MASK_BITS so that b3Filter::groupIndex works.
+-		// consider using bits = groupIndex > 0 ? B3_DEFAULT_MASK_BITS : maskBits
++		// A positive group overrides the mask bits, so only then does the query need every category.
++		// Otherwise the shape's own mask prunes whole subtrees it can never pair with, such as the
++		// other shapes of a body whose shapes are filtered against each other.
++		const b3Filter* queryFilter = &world->shapes.data[queryContext.queryShapeIndex].filter;
++		uint64_t maskBits = queryFilter->groupIndex > 0 ? B3_DEFAULT_MASK_BITS : queryFilter->maskBits;
+ 		bool requireAllBits = false;
+ 		if ( proxyType == b3_dynamicBody )
+ 		{
+ 			queryContext.queryTreeType = b3_kinematicBody;
+-			b3DynamicTree_Query( bp->trees + b3_kinematicBody, fatAABB, B3_DEFAULT_MASK_BITS, requireAllBits, b3PairQueryCallback,
++			b3DynamicTree_Query( bp->trees + b3_kinematicBody, fatAABB, maskBits, requireAllBits, b3PairQueryCallback,
+ 								 &queryContext );
+ 
+ 			queryContext.queryTreeType = b3_staticBody;
+-			b3DynamicTree_Query( bp->trees + b3_staticBody, fatAABB, B3_DEFAULT_MASK_BITS, requireAllBits, b3PairQueryCallback,
++			b3DynamicTree_Query( bp->trees + b3_staticBody, fatAABB, maskBits, requireAllBits, b3PairQueryCallback,
+ 								 &queryContext );
+ 		}
+ 
+ 		// All proxies collide with dynamic proxies
+-		// Using B3_DEFAULT_MASK_BITS so that b3Filter::groupIndex works.
+ 		queryContext.queryTreeType = b3_dynamicBody;
+-		b3DynamicTree_Query( bp->trees + b3_dynamicBody, fatAABB, B3_DEFAULT_MASK_BITS, requireAllBits, b3PairQueryCallback,
++		b3DynamicTree_Query( bp->trees + b3_dynamicBody, fatAABB, maskBits, requireAllBits, b3PairQueryCallback,
+ 							 &queryContext );
+ 	}
+ 

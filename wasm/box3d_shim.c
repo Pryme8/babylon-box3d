@@ -1237,6 +1237,19 @@ BX_EXPORT void bx_Body_SetBullet( int slot, int flag )
 	b3Body_SetBullet( body->id, flag != 0 );
 }
 
+// Continuous collision for this body alone (wasm/patches/0002). The world's switch still applies.
+BX_EXPORT void bx_Body_EnableContinuous( int slot, int flag )
+{
+	BX_BODY( slot );
+	b3Body_EnableContinuous( body->id, flag != 0 );
+}
+
+BX_EXPORT int bx_Body_IsContinuousEnabled( int slot )
+{
+	BX_BODY_RET( slot, 0 );
+	return b3Body_IsContinuousEnabled( body->id ) ? 1 : 0;
+}
+
 BX_EXPORT void bx_Body_AllowFastRotation( int slot, int flag )
 {
 	BX_BODY( slot );

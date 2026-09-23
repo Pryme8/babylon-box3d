@@ -94,6 +94,9 @@ export interface Box3DExports {
     _bx_Body_IsAwake(body: number): number;
     _bx_Body_EnableSleep(body: number, flag: number): void;
     _bx_Body_SetBullet(body: number, flag: number): void;
+    /** Continuous collision for this body alone, on by default; the world's switch still applies. */
+    _bx_Body_EnableContinuous(body: number, flag: number): void;
+    _bx_Body_IsContinuousEnabled(body: number): number;
     _bx_Body_AllowFastRotation(body: number, flag: number): void;
     _bx_Body_SetMotionLocks(body: number, lx: number, ly: number, lz: number, ax: number, ay: number, az: number): void;
     /** scratch: [minx, miny, minz, maxx, maxy, maxz] */
@@ -148,8 +151,9 @@ export interface Box3DExports {
     _bx_ShapeDesc_CreateHull(points: number, pointCount: number): number;
     /** vertices: vertexCount * 3 floats, indices: triangleCount * 3 int32 */
     _bx_ShapeDesc_CreateMesh(vertices: number, vertexCount: number, indices: number, triangleCount: number, sx: number, sy: number, sz: number, clockwise: number, weld: number): number;
-    /** heights: countX * countZ floats indexed [z * countX + x], local offset (ox, oy, oz) */
-    _bx_ShapeDesc_CreateHeightField(heights: number, countX: number, countZ: number, sx: number, sy: number, sz: number, clockwise: number, ox: number, oy: number, oz: number): number;
+    /** heights: countX * countZ floats indexed [z * countX + x]; materials: one byte a cell, (countX - 1) * (countZ - 1),
+     * or 0 for none; local offset (ox, oy, oz) */
+    _bx_ShapeDesc_CreateHeightField(heights: number, materials: number, countX: number, countZ: number, sx: number, sy: number, sz: number, clockwise: number, ox: number, oy: number, oz: number): number;
     _bx_ShapeDesc_CreateContainer(): number;
     _bx_ShapeDesc_AddChild(parent: number, child: number, px: number, py: number, pz: number, qx: number, qy: number, qz: number, qw: number, sx: number, sy: number, sz: number): void;
     _bx_ShapeDesc_RemoveChild(parent: number, index: number): void;
