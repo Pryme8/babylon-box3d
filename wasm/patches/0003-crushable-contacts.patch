@@ -1,0 +1,490 @@
+diff --git a/include/box3d/box3d.h b/include/box3d/box3d.h
+index 8215b0b..6a78a56 100644
+--- a/include/box3d/box3d.h
++++ b/include/box3d/box3d.h
+@@ -943,6 +943,21 @@ B3_API b3Filter b3Shape_GetFilter( b3ShapeId shapeId );
+ /// @param invokeContacts if true then the shape will have all contacts recomputed the next time step (expensive)
+ B3_API void b3Shape_SetFilter( b3ShapeId shapeId, b3Filter filter, bool invokeContacts );
+ 
++/// Make this shape crushable: each of its contacts pushes with at most maxForce (newtons), shared between the
++/// contact's points, so a body meeting something rigid decelerates over a distance instead of stopping within a
++/// step. The limit of a contact is the smaller of its two shapes' limits, and it may change every step.
++/// A plastic contact gets no push-out and no restitution: the overlap it reaches is kept, as a crushed part keeps
++/// its shape. A contact that is not plastic keeps the usual soft push-out and restitution, within the limit.
++/// Crushable contacts are solved on the scalar path. A maxForce of zero or less makes the shape rigid again.
++/// Contacts are kept, with their warm starting, when a shape becomes crushable or rigid.
++B3_API void b3Shape_SetCrushLimit( b3ShapeId shapeId, float maxForce, bool plastic );
++
++/// The shape's crush limit in newtons, or zero when the shape is rigid.
++B3_API float b3Shape_GetCrushLimit( b3ShapeId shapeId );
++
++/// Is the shape's crush limit plastic?
++B3_API bool b3Shape_IsCrushPlastic( b3ShapeId shapeId );
++
+ /// Enable sensor events for this shape. Only applies to kinematic and dynamic bodies. Ignored for sensors.
+ /// @see b3ShapeDef::isSensor
+ B3_API void b3Shape_EnableSensorEvents( b3ShapeId shapeId, bool flag );
+diff --git a/src/constraint_graph.c b/src/constraint_graph.c
+index 9f06e9e..c011c1a 100644
+--- a/src/constraint_graph.c
++++ b/src/constraint_graph.c
+@@ -144,7 +144,7 @@ void b3AddContactToGraph( b3World* world, b3Contact* contact )
+ 	}
+ #endif
+ 
+-	bool isScalar = ( contact->flags & b3_simMeshContact ) || colorIndex == B3_OVERFLOW_INDEX;
++	bool isScalar = ( contact->flags & B3_SCALAR_CONTACT_FLAGS ) || colorIndex == B3_OVERFLOW_INDEX;
+ 
+ 	b3GraphColor* color = graph->colors + colorIndex;
+ 	contact->colorIndex = colorIndex;
+@@ -168,7 +168,7 @@ void b3AddContactToGraph( b3World* world, b3Contact* contact )
+ 	}
+ }
+ 
+-void b3RemoveContactFromGraph( b3World* world, int bodyIdA, int bodyIdB, int colorIndex, int localIndex, bool meshContact )
++void b3RemoveContactFromGraph( b3World* world, int bodyIdA, int bodyIdB, int colorIndex, int localIndex, bool scalarContact )
+ {
+ 	b3ConstraintGraph* graph = &world->constraintGraph;
+ 
+@@ -182,7 +182,7 @@ void b3RemoveContactFromGraph( b3World* world, int bodyIdA, int bodyIdB, int col
+ 		b3ClearBit( &color->bodySet, bodyIdB );
+ 	}
+ 
+-	if ( meshContact || colorIndex == B3_OVERFLOW_INDEX )
++	if ( scalarContact || colorIndex == B3_OVERFLOW_INDEX )
+ 	{
+ 		int movedIndex = b3Array_RemoveSwap( color->contacts, localIndex );
+ 		if ( movedIndex != B3_NULL_INDEX )
+@@ -207,7 +207,7 @@ void b3RemoveContactFromGraph( b3World* world, int bodyIdA, int bodyIdB, int col
+ 			B3_ASSERT( movedContact->setIndex == b3_awakeSet );
+ 			B3_ASSERT( movedContact->colorIndex == colorIndex );
+ 			B3_ASSERT( movedContact->localIndex == movedIndex );
+-			B3_ASSERT( ( movedContact->flags & b3_simMeshContact ) == 0 );
++			B3_ASSERT( ( movedContact->flags & B3_SCALAR_CONTACT_FLAGS ) == 0 );
+ 			movedContact->localIndex = localIndex;
+ 		}
+ 	}
+diff --git a/src/constraint_graph.h b/src/constraint_graph.h
+index ab17e9a..cfb19e7 100644
+--- a/src/constraint_graph.h
++++ b/src/constraint_graph.h
+@@ -70,7 +70,7 @@ void b3CreateGraph( b3ConstraintGraph* graph, int bodyCapacity );
+ void b3DestroyGraph( b3ConstraintGraph* graph );
+ 
+ void b3AddContactToGraph( b3World* world, b3Contact* contact );
+-void b3RemoveContactFromGraph( b3World* world, int bodyIdA, int bodyIdB, int colorIndex, int localIndex, bool meshContact );
++void b3RemoveContactFromGraph( b3World* world, int bodyIdA, int bodyIdB, int colorIndex, int localIndex, bool scalarContact );
+ 
+ b3JointSim* b3CreateJointInGraph( b3World* world, b3Joint* joint );
+ void b3AddJointToGraph( b3World* world, b3JointSim* jointSim, b3Joint* joint );
+diff --git a/src/contact.c b/src/contact.c
+index 1506bdb..73a363f 100644
+--- a/src/contact.c
++++ b/src/contact.c
+@@ -248,6 +248,11 @@ void b3CreateContact( b3World* world, b3Shape* shapeA, b3Shape* shapeB, int chil
+ 		contact->flags |= b3_contactEnableContactEvents;
+ 	}
+ 
++	if ( ( shapeA->flags | shapeB->flags ) & b3_enableCrush )
++	{
++		contact->flags |= b3_simCrushContact;
++	}
++
+ 	if ( ( shapeA->flags & b3_enableSpeculative ) && ( shapeB->flags & b3_enableSpeculative ) )
+ 	{
+ 		contact->flags |= b3_enableSpeculativePoints;
+@@ -444,8 +449,8 @@ void b3DestroyContact( b3World* world, b3Contact* contact, bool wakeBodies )
+ 	{
+ 		// contact is an active constraint
+ 		B3_ASSERT( contact->setIndex == b3_awakeSet );
+-		bool meshContact = contact->flags & b3_simMeshContact;
+-		b3RemoveContactFromGraph( world, bodyIdA, bodyIdB, contact->colorIndex, contact->localIndex, meshContact );
++		bool scalarContact = contact->flags & B3_SCALAR_CONTACT_FLAGS;
++		b3RemoveContactFromGraph( world, bodyIdA, bodyIdB, contact->colorIndex, contact->localIndex, scalarContact );
+ 	}
+ 	else
+ 	{
+diff --git a/src/contact.h b/src/contact.h
+index ad9fa74..232525e 100644
+--- a/src/contact.h
++++ b/src/contact.h
+@@ -70,8 +70,14 @@ enum b3ContactFlags
+ 
+ 	// Enable speculative contact points
+ 	b3_enableSpeculativePoints = 0x01000000,
++
++	// One of the shapes is crushable, so the contact is solved on the scalar path with a clamped impulse
++	b3_simCrushContact = 0x02000000,
+ };
+ 
++// Mesh and crush contacts are solved on the scalar path, and live in a color's contacts array.
++#define B3_SCALAR_CONTACT_FLAGS ( b3_simMeshContact | b3_simCrushContact )
++
+ // A contact edge is used to connect bodies and contacts together
+ // in a contact graph where each body is a node and each contact
+ // is an edge. A contact edge belongs to a doubly linked list
+diff --git a/src/contact_solver.c b/src/contact_solver.c
+index 48de409..348551a 100644
+--- a/src/contact_solver.c
++++ b/src/contact_solver.c
+@@ -13,9 +13,7 @@
+ #include "simd.h"
+ #include "solver_set.h"
+ 
+-#if B3_ENABLE_VALIDATION
+ #include "shape.h"
+-#endif
+ 
+ // contact separation for sub-stepping
+ // s = s0 + dot(cB + rB - cA - rA, normal)
+@@ -163,6 +161,37 @@ void b3PrepareContacts_Mesh( b3SolverBlock block, b3StepContext* context )
+ 			contactConstraint->restitution = contact->restitution;
+ 			contactConstraint->rollingResistance = contact->rollingResistance;
+ 
++			// A crushable contact pushes with at most the smaller of its shapes' limits, shared between its points.
++			float maxNormalImpulse = FLT_MAX;
++			bool plastic = false;
++			if ( contact->flags & b3_simCrushContact )
++			{
++				const b3Shape* shapeA = b3Array_Get( world->shapes, contact->shapeIdA );
++				const b3Shape* shapeB = b3Array_Get( world->shapes, contact->shapeIdB );
++				float forceA = ( shapeA->flags & b3_enableCrush ) ? shapeA->crushForce : FLT_MAX;
++				float forceB = ( shapeB->flags & b3_enableCrush ) ? shapeB->crushForce : FLT_MAX;
++				float maxForce = forceA <= forceB ? forceA : forceB;
++				plastic = forceA <= forceB ? shapeA->crushPlastic : shapeB->crushPlastic;
++
++				int totalPointCount = 0;
++				for ( int manifoldIndex = 0; manifoldIndex < manifoldCount; ++manifoldIndex )
++				{
++					totalPointCount += contact->manifolds[manifoldIndex].pointCount;
++				}
++
++				if ( maxForce < FLT_MAX && totalPointCount > 0 )
++				{
++					maxNormalImpulse = maxForce * context->h / (float)totalPointCount;
++				}
++			}
++
++			contactConstraint->maxNormalImpulse = maxNormalImpulse;
++			contactConstraint->plastic = plastic;
++			if ( plastic )
++			{
++				contactConstraint->restitution = 0.0f;
++			}
++
+ 			b3ManifoldConstraint* manifoldConstraints = manifoldBase + specs[localIndex].manifoldStart;
+ 			contactConstraint->constraints = manifoldConstraints;
+ 
+@@ -199,8 +228,10 @@ void b3PrepareContacts_Mesh( b3SolverBlock block, b3StepContext* context )
+ 
+ 					float s = mp->separation;
+ 					cp->baseSeparation = s - b3Dot( b3Sub( cp->rB, cp->rA ), normal );
+-					cp->normalImpulse = warmStartScale * mp->normalImpulse;
++					// The limit can drop between steps, so the warm start is held to it
++					cp->normalImpulse = b3MinFloat( warmStartScale * mp->normalImpulse, maxNormalImpulse );
+ 					cp->totalNormalImpulse = 0.0f;
++					cp->maxImpulse = maxNormalImpulse;
+ 
+ 					b3Vec3 rA = cp->rA;
+ 					b3Vec3 rB = cp->rB;
+@@ -416,6 +447,8 @@ void b3SolveContacts_Mesh( b3SolverBlock block, b3StepContext* context, bool use
+ 		b3Softness softness = contactConstraint->softness;
+ 		float friction = contactConstraint->friction;
+ 		float rollingResistance = contactConstraint->rollingResistance;
++		float maxNormalImpulse = contactConstraint->maxNormalImpulse;
++		bool plastic = contactConstraint->plastic;
+ 
+ 		for ( int j = 0; j < manifoldCount; ++j )
+ 		{
+@@ -448,8 +481,9 @@ void b3SolveContacts_Mesh( b3SolverBlock block, b3StepContext* context, bool use
+ 					// speculative bias
+ 					velocityBias = s * inv_h;
+ 				}
+-				else if ( useBias )
++				else if ( useBias && plastic == false )
+ 				{
++					// A plastic contact keeps its overlap: it only stops the approach, and never pushes out
+ 					velocityBias = b3MaxFloat( softness.massScale * softness.biasRate * s, -contactSpeed );
+ 					massScale = softness.massScale;
+ 					impulseScale = softness.impulseScale;
+@@ -460,11 +494,29 @@ void b3SolveContacts_Mesh( b3SolverBlock block, b3StepContext* context, bool use
+ 				b3Vec3 vrB = b3Add( vB, b3Cross( wB, rB ) );
+ 				float vn = b3Dot( b3Sub( vrB, vrA ), normal );
+ 
++				// A crushable point that is still apart pushes only for the part of the substep after the surfaces
++				// meet, so the solve pass sets this substep's budget from the separation before the positions move.
++				// The relax pass runs after they move and would otherwise push for the next substep on this one's
++				// budget, a substep early: a rigid contact wants that look ahead, a crushable one does not.
++				if ( useBias && maxNormalImpulse < FLT_MAX )
++				{
++					float approach = -vn * context->h;
++					if ( s <= 0.0f )
++					{
++						cp->maxImpulse = maxNormalImpulse;
++					}
++					else
++					{
++						cp->maxImpulse = approach > s ? ( 1.0f - s / approach ) * maxNormalImpulse : 0.0f;
++					}
++				}
++				float pointMaxImpulse = cp->maxImpulse;
++
+ 				// incremental normal impulse
+ 				float deltaImpulse = -cp->normalMass * ( massScale * vn + velocityBias ) - impulseScale * cp->normalImpulse;
+ 
+-				// clamp the accumulated impulse
+-				float newImpulse = b3MaxFloat( cp->normalImpulse + deltaImpulse, 0.0f );
++				// clamp the accumulated impulse, below by zero and above by the crush limit
++				float newImpulse = b3ClampFloat( cp->normalImpulse + deltaImpulse, 0.0f, pointMaxImpulse );
+ 				deltaImpulse = newImpulse - cp->normalImpulse;
+ 				cp->normalImpulse = newImpulse;
+ 				cp->totalNormalImpulse += newImpulse;
+@@ -658,7 +710,7 @@ void b3ApplyRestitution_Mesh( b3SolverBlock block, b3StepContext* context )
+ 				float impulse = -cp->normalMass * ( vn + restitution * cp->relativeVelocity );
+ 
+ 				// clamp the accumulated impulse
+-				float newImpulse = b3MaxFloat( cp->normalImpulse + impulse, 0.0f );
++				float newImpulse = b3ClampFloat( cp->normalImpulse + impulse, 0.0f, cp->maxImpulse );
+ 				impulse = newImpulse - cp->normalImpulse;
+ 				cp->normalImpulse = newImpulse;
+ 				cp->totalNormalImpulse += impulse;
+diff --git a/src/contact_solver.h b/src/contact_solver.h
+index d85f233..0d4f242 100644
+--- a/src/contact_solver.h
++++ b/src/contact_solver.h
+@@ -15,6 +15,10 @@ typedef struct b3ManifoldConstraintPoint
+ 	float totalNormalImpulse;
+ 	float normalMass;
+ 	float leverArm;
++
++	// The most normal impulse the point may carry this substep, set by the solve pass: the crush limit, or the
++	// part of it for the time after the surfaces meet. FLT_MAX for a rigid contact.
++	float maxImpulse;
+ } b3ManifoldConstraintPoint;
+ 
+ typedef struct b3ManifoldConstraint
+@@ -48,6 +52,12 @@ typedef struct b3ContactConstraint
+ 	float friction;
+ 	float restitution;
+ 	float rollingResistance;
++
++	// Crushable contacts: the most normal impulse a point may carry in a substep, and whether the contact
++	// is plastic (no push-out, no restitution). FLT_MAX and false for a rigid contact.
++	float maxNormalImpulse;
++	bool plastic;
++
+ 	int manifoldCount;
+ } b3ContactConstraint;
+ 
+diff --git a/src/physics_world.c b/src/physics_world.c
+index 29c13c7..e456590 100644
+--- a/src/physics_world.c
++++ b/src/physics_world.c
+@@ -752,7 +752,7 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+ 		}
+ 
+ 		// Update the mesh contact spec
+-		if ( touching == true && wasTouching == true && ( contact->flags & b3_simMeshContact ) )
++		if ( touching == true && wasTouching == true && ( contact->flags & B3_SCALAR_CONTACT_FLAGS ) )
+ 		{
+ 			B3_ASSERT( contact->colorIndex != B3_NULL_INDEX );
+ 			B3_ASSERT( 0 <= contact->colorIndex && contact->colorIndex < B3_GRAPH_COLOR_COUNT );
+@@ -1014,8 +1014,8 @@ static void b3Collide( b3StepContext* context )
+ 
+ 				b3AddNonTouchingContact( world, contact );
+ 
+-				bool isMeshContact = contact->flags & b3_simMeshContact;
+-				b3RemoveContactFromGraph( world, bodyIdA, bodyIdB, colorIndex, localIndex, isMeshContact );
++				bool isScalarContact = contact->flags & B3_SCALAR_CONTACT_FLAGS;
++				b3RemoveContactFromGraph( world, bodyIdA, bodyIdB, colorIndex, localIndex, isScalarContact );
+ 				contact = NULL;
+ 			}
+ 
+@@ -3998,7 +3998,7 @@ void b3ValidateContacts( b3World* world )
+ 					B3_ASSERT( contact->bodySimIndexB == bodyB->localIndex );
+ 				}
+ 
+-				if ( ( contact->flags & b3_simMeshContact ) != 0 || contact->colorIndex == B3_OVERFLOW_INDEX )
++				if ( ( contact->flags & B3_SCALAR_CONTACT_FLAGS ) != 0 || contact->colorIndex == B3_OVERFLOW_INDEX )
+ 				{
+ 					b3GraphColor* color = graph->colors + contact->colorIndex;
+ 					int contactId = b3Array_Get( color->contacts, contact->localIndex )->contactId;
+diff --git a/src/recording_ops.inl b/src/recording_ops.inl
+index b12a4dc..a0b3635 100644
+--- a/src/recording_ops.inl
++++ b/src/recording_ops.inl
+@@ -97,6 +97,7 @@ B3_REC_OP( 0x5C, ShapeSetName, RET_NONE, ARG( SHAPEID, shape ) ARG( STR, name )
+ B3_REC_OP( 0x5D, ShapeSetMeshMaterial, RET_NONE, ARG( SHAPEID, shape ) ARG( MATERIAL, material ) ARG( I32, index ) )
+ B3_REC_OP( 0x5E, ShapeSetHull, RET_NONE, ARG( SHAPEID, shape ) ARG( GEOMID, geometryId ) )
+ B3_REC_OP( 0x5F, ShapeSetMesh, RET_NONE, ARG( SHAPEID, shape ) ARG( GEOMID, geometryId ) ARG( VEC3, scale ) )
++B3_REC_OP( 0x60, ShapeSetCrushLimit, RET_NONE, ARG( SHAPEID, shape ) ARG( F32, maxForce ) ARG( BOOL, plastic ) )
+ 
+ // Joint create and destroy
+ B3_REC_OP( 0x90, CreateParallelJoint, RET_JOINTID, ARG( WORLDID, world ) ARG( PARALLELJOINTDEF, def ) )
+diff --git a/src/recording_replay.c b/src/recording_replay.c
+index 234f306..8da719d 100644
+--- a/src/recording_replay.c
++++ b/src/recording_replay.c
+@@ -1107,6 +1107,11 @@ static void b3RecDispatch_ShapeSetFriction( const b3RecArgs_ShapeSetFriction* a,
+ 	b3Shape_SetFriction( b3RecMakeShapeId( rdr, a->shape ), a->friction );
+ }
+ 
++static void b3RecDispatch_ShapeSetCrushLimit( const b3RecArgs_ShapeSetCrushLimit* a, b3RecReader* rdr )
++{
++	b3Shape_SetCrushLimit( b3RecMakeShapeId( rdr, a->shape ), a->maxForce, a->plastic );
++}
++
+ static void b3RecDispatch_ShapeSetRestitution( const b3RecArgs_ShapeSetRestitution* a, b3RecReader* rdr )
+ {
+ 	b3Shape_SetRestitution( b3RecMakeShapeId( rdr, a->shape ), a->restitution );
+diff --git a/src/shape.c b/src/shape.c
+index 1f0c305..101e613 100644
+--- a/src/shape.c
++++ b/src/shape.c
+@@ -5,6 +5,7 @@
+ 
+ #include "body.h"
+ #include "broad_phase.h"
++#include "constraint_graph.h"
+ #include "contact.h"
+ #include "physics_world.h"
+ #include "recording.h"
+@@ -176,6 +177,8 @@ static b3Shape* b3CreateShapeInternal( b3World* world, b3Body* body, b3WorldTran
+ 	shape->userData = def->userData;
+ 	shape->userShape = NULL;
+ 	shape->flags = 0;
++	shape->crushForce = 0.0f;
++	shape->crushPlastic = false;
+ 	shape->flags |= def->enableSensorEvents ? b3_enableSensorEvents : 0;
+ 	shape->flags |= def->enableContactEvents ? b3_enableContactEvents : 0;
+ 	shape->flags |= def->enableCustomFiltering ? b3_enableCustomFiltering : 0;
+@@ -1326,6 +1329,90 @@ b3Filter b3Shape_GetFilter( b3ShapeId shapeId )
+ 	return shape->filter;
+ }
+ 
++// Moves each of the shape's contacts to the solver path its shapes now call for. A contact in the constraint
++// graph leaves it on its old path and rejoins on the new one, keeping its manifolds and so its warm starting.
++static void b3RouteCrushContacts( b3World* world, b3Shape* shape )
++{
++	b3Body* body = b3Array_Get( world->bodies, shape->bodyId );
++
++	int contactKey = body->headContactKey;
++	while ( contactKey != B3_NULL_INDEX )
++	{
++		int contactId = contactKey >> 1;
++		int edgeIndex = contactKey & 1;
++
++		b3Contact* contact = b3Array_Get( world->contacts, contactId );
++		contactKey = contact->edges[edgeIndex].nextKey;
++
++		if ( contact->shapeIdA != shape->id && contact->shapeIdB != shape->id )
++		{
++			continue;
++		}
++
++		b3Shape* shapeA = b3Array_Get( world->shapes, contact->shapeIdA );
++		b3Shape* shapeB = b3Array_Get( world->shapes, contact->shapeIdB );
++		bool crush = ( ( shapeA->flags | shapeB->flags ) & b3_enableCrush ) != 0;
++		bool wasCrush = ( contact->flags & b3_simCrushContact ) != 0;
++		if ( crush == wasCrush )
++		{
++			continue;
++		}
++
++		if ( contact->colorIndex != B3_NULL_INDEX )
++		{
++			B3_ASSERT( contact->setIndex == b3_awakeSet );
++			bool wasScalar = ( contact->flags & B3_SCALAR_CONTACT_FLAGS ) != 0;
++			b3RemoveContactFromGraph( world, contact->edges[0].bodyId, contact->edges[1].bodyId, contact->colorIndex,
++									  contact->localIndex, wasScalar );
++			contact->flags ^= b3_simCrushContact;
++			b3AddContactToGraph( world, contact );
++		}
++		else
++		{
++			contact->flags ^= b3_simCrushContact;
++		}
++	}
++}
++
++void b3Shape_SetCrushLimit( b3ShapeId shapeId, float maxForce, bool plastic )
++{
++	B3_ASSERT( b3IsValidFloat( maxForce ) );
++	b3World* world = b3GetUnlockedWorld( shapeId.world0 );
++	if ( world == NULL )
++	{
++		return;
++	}
++
++	B3_REC( world, ShapeSetCrushLimit, shapeId, maxForce, plastic );
++
++	b3Shape* shape = b3GetShape( world, shapeId );
++	bool wasCrush = ( shape->flags & b3_enableCrush ) != 0;
++	bool crush = maxForce > 0.0f;
++
++	shape->crushForce = crush ? maxForce : 0.0f;
++	shape->crushPlastic = crush && plastic;
++
++	if ( crush != wasCrush )
++	{
++		shape->flags = crush ? shape->flags | b3_enableCrush : shape->flags & ~b3_enableCrush;
++		b3RouteCrushContacts( world, shape );
++	}
++}
++
++float b3Shape_GetCrushLimit( b3ShapeId shapeId )
++{
++	b3World* world = b3GetWorld( shapeId.world0 );
++	b3Shape* shape = b3GetShape( world, shapeId );
++	return shape->crushForce;
++}
++
++bool b3Shape_IsCrushPlastic( b3ShapeId shapeId )
++{
++	b3World* world = b3GetWorld( shapeId.world0 );
++	b3Shape* shape = b3GetShape( world, shapeId );
++	return shape->crushPlastic;
++}
++
+ static void b3ResetProxy( b3World* world, b3Shape* shape, bool wakeBodies, bool destroyProxy )
+ {
+ 	b3Body* body = b3Array_Get( world->bodies, shape->bodyId );
+diff --git a/src/shape.h b/src/shape.h
+index ed76dd4..e02bf29 100644
+--- a/src/shape.h
++++ b/src/shape.h
+@@ -21,6 +21,9 @@ typedef enum b3ShapeFlags
+ 	b3_enablePreSolveEvents = 0x10,
+ 	b3_enlargedAABB = 0x20,
+ 	b3_enableSpeculative = 0x40,
++
++	// The shape's contacts push with at most crushForce
++	b3_enableCrush = 0x80,
+ } b3ShapeFlags;
+ 
+ typedef struct b3Shape
+@@ -45,6 +48,11 @@ typedef struct b3Shape
+ 	b3SurfaceMaterial* materials;
+ 
+ 	b3Filter filter;
++
++	// Crush limit in newtons, used while b3_enableCrush is set
++	float crushForce;
++	bool crushPlastic;
++
+ 	void* userData;
+ 	void* userShape;
+ 
+diff --git a/src/solver_set.c b/src/solver_set.c
+index f050a86..ab64ce5 100644
+--- a/src/solver_set.c
++++ b/src/solver_set.c
+@@ -324,7 +324,7 @@ void b3TrySleepIsland( b3World* world, int islandId )
+ 			b3Array_Push( sleepSet->contactIndices, contactId );
+ 
+ 			int localIndex = contact->localIndex;
+-			if ( ( contact->flags & b3_simMeshContact ) || colorIndex == B3_OVERFLOW_INDEX )
++			if ( ( contact->flags & B3_SCALAR_CONTACT_FLAGS ) || colorIndex == B3_OVERFLOW_INDEX )
+ 			{
+ 				int movedLocalIndex = b3Array_RemoveSwap( color->contacts, localIndex );
+ 				if ( movedLocalIndex != B3_NULL_INDEX )

@@ -356,8 +356,15 @@ stays exactly upstream's commit, and a change to the patch set rebuilds every ob
 | --- | --- |
 | `0001-broad-phase-prunes-by-mask.patch` | A shape that moved queries the broad phase with its own mask bits instead of every category (unless it is in a positive group, which overrides masks). A body whose shapes are filtered against each other then skips its own subtree instead of visiting every sibling shape before rejecting it. Which pairs collide does not change. |
 | `0002-continuous-per-body.patch` | `b3Body_EnableContinuous` and `b3Body_IsContinuousEnabled` (shim: `bx_Body_EnableContinuous`, `bx_Body_IsContinuousEnabled`): continuous collision switched for one body. The world's switch still applies. A body made of many small shapes is swept shape by shape whenever its smallest shape moves fast enough, which can cost more than the rest of the step. |
+| `0003-crushable-contacts.patch` | `b3Shape_SetCrushLimit(shape, maxForce, plastic)`, `b3Shape_GetCrushLimit` and `b3Shape_IsCrushPlastic` (shim: `bx_Body_SetShapeCrush(body, i, maxForce, plastic)`, `bx_Body_GetShapeCrush`): each contact of a crushable shape pushes with at most `maxForce` newtons, the smaller of its two shapes' limits, shared between its points, so a body meeting something rigid decelerates over a distance instead of stopping within a step. A plastic contact gets no push-out and no restitution, so it keeps the overlap it reaches. Crushable contacts are routed to the scalar solver path, where each point's accumulated impulse is clamped; a point still apart pushes only for the part of the substep after the surfaces meet. Rigid contacts are untouched, bit for bit. The limit may change every step, and a shape turning crushable or rigid keeps its contacts. |
 
-`test/wasm.patches.test.ts` covers both. Neither has been offered upstream.
+`test/wasm.patches.test.ts` covers 0001 and 0002, and `test/wasm.crush.test.ts` covers 0003. None has been offered upstream.
+
+**Crush accuracy.** Against a constant limit the crush depth lands within 1.5% of the continuous answer at 480 Hz
+with two substeps, and within 2% on a height field. What remains is Box3D's, not the patch's: its semi-implicit
+integrator travels v·h/2 less under any constant force, and it makes contact points only within its 2 cm
+speculative distance, so a body that covers more than that in a step (above 9.6 m/s at 480 Hz) can start up to
+v·dt − 2 cm inside. Mesh and height field contacts also carry a 5 mm skin.
 
 ## License
 

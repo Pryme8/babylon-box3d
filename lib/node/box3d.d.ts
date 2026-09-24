@@ -97,6 +97,13 @@ export interface Box3DExports {
     /** Continuous collision for this body alone, on by default; the world's switch still applies. */
     _bx_Body_EnableContinuous(body: number, flag: number): void;
     _bx_Body_IsContinuousEnabled(body: number): number;
+    /**
+     * Crushable contacts for the body's shape `index`: each of its contacts pushes with at most `maxForce` newtons,
+     * and a plastic one (1) keeps its overlap instead of pushing out. A `maxForce` of zero or less makes it rigid.
+     */
+    _bx_Body_SetShapeCrush(body: number, index: number, maxForce: number, plastic: number): void;
+    /** scratch: [maxForce, plastic] for the body's shape `index`, zeros when it is rigid or there is no such shape. */
+    _bx_Body_GetShapeCrush(body: number, index: number): void;
     _bx_Body_AllowFastRotation(body: number, flag: number): void;
     _bx_Body_SetMotionLocks(body: number, lx: number, ly: number, lz: number, ax: number, ay: number, az: number): void;
     /** scratch: [minx, miny, minz, maxx, maxy, maxz] */

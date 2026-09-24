@@ -1250,6 +1250,32 @@ BX_EXPORT int bx_Body_IsContinuousEnabled( int slot )
 	return b3Body_IsContinuousEnabled( body->id ) ? 1 : 0;
 }
 
+// Crushable contacts for the body's shape i (wasm/patches/0003): each of its contacts pushes with at most maxForce
+// newtons, and a plastic one keeps its overlap instead of pushing out. A maxForce of zero or less makes it rigid.
+BX_EXPORT void bx_Body_SetShapeCrush( int slot, int index, float maxForce, int plastic )
+{
+	BX_BODY( slot );
+	if ( index < 0 || index >= body->shapeCount || b3Shape_IsValid( body->shapes[index] ) == false )
+	{
+		return;
+	}
+	b3Shape_SetCrushLimit( body->shapes[index], maxForce, plastic != 0 );
+}
+
+/// scratch: [maxForce, plastic] for the body's shape i, zeros when it is rigid or there is no such shape.
+BX_EXPORT void bx_Body_GetShapeCrush( int slot, int index )
+{
+	s_scratch[0] = 0.0f;
+	s_scratch[1] = 0.0f;
+	BX_BODY( slot );
+	if ( index < 0 || index >= body->shapeCount || b3Shape_IsValid( body->shapes[index] ) == false )
+	{
+		return;
+	}
+	s_scratch[0] = b3Shape_GetCrushLimit( body->shapes[index] );
+	s_scratch[1] = b3Shape_IsCrushPlastic( body->shapes[index] ) ? 1.0f : 0.0f;
+}
+
 BX_EXPORT void bx_Body_AllowFastRotation( int slot, int flag )
 {
 	BX_BODY( slot );
