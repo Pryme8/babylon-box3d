@@ -356,7 +356,7 @@ const enum Box3DShapeSync {
 }
 
 const MOVE_STRIDE = 9;
-const CONTACT_STRIDE = 12;
+const CONTACT_STRIDE = 14;
 const SENSOR_STRIDE = 5;
 const RAY_STRIDE = 11;
 

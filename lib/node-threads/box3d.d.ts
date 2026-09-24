@@ -104,6 +104,26 @@ export interface Box3DExports {
     _bx_Body_SetShapeCrush(body: number, index: number, maxForce: number, plastic: number): void;
     /** scratch: [maxForce, plastic] for the body's shape `index`, zeros when it is rigid or there is no such shape. */
     _bx_Body_GetShapeCrush(body: number, index: number): void;
+    /**
+     * Every touching contact manifold on the body, as the body feels it, written from `_bx_BodyContactsPtr`: 48 floats
+     * each, [shapeIndex, otherBody, otherShapeIndex, otherShapeDesc, normal xyz (the push on this body), friction impulse
+     * xyz on this body, twist impulse, pointCount], then 4 points of 9: [x, y, z, separation, normalImpulse (last
+     * substep), totalNormalImpulse (Box3D's, summed over every solver pass: nonzero means it carried load),
+     * normalVelocity, triangleIndex, material]. Returns the record count.
+     */
+    _bx_Body_GetContacts(body: number): number;
+    _bx_BodyContactsPtr(): number;
+    /** Per-shape handles: each changes one shape, resets only its contacts, and keeps every shape's index. */
+    /** Replaces shape `index` with the hull of `pointCount` points (xyz floats at `points`) in the body's frame; 1 if done. */
+    _bx_Body_SetShapeHull(body: number, index: number, points: number, pointCount: number): number;
+    /** Moves shape `index` (a hull, sphere or capsule) by (dx, dy, dz) in the body's frame; 1 if done. */
+    _bx_Body_TranslateShape(body: number, index: number, dx: number, dy: number, dz: number): number;
+    _bx_Body_SetShapeFilter(body: number, index: number, categoryBits: number, maskBits: number, groupIndex: number): void;
+    /** Removes shape `index`; the other shapes keep their indices. */
+    _bx_Body_RemoveShape(body: number, index: number): void;
+    _bx_Body_HasShape(body: number, index: number): number;
+    /** scratch: [kind (0 sphere, 1 capsule, 2 hull, -1 none), vertexCount, aabb min xyz, aabb max xyz] in the body's frame */
+    _bx_Body_GetShapeInfo(body: number, index: number): void;
     _bx_Body_AllowFastRotation(body: number, flag: number): void;
     _bx_Body_SetMotionLocks(body: number, lx: number, ly: number, lz: number, ax: number, ay: number, az: number): void;
     /** scratch: [minx, miny, minz, maxx, maxy, maxz] */
@@ -220,8 +240,19 @@ export interface Box3DExports {
 
     // queries
     _bx_RayHitsPtr(): number;
-    /** Returns the hit count; hits are 11 floats each: [px, py, pz, nx, ny, nz, fraction, bodySlot, shapeDesc, triangleIndex, reserved] */
+    /** Returns the hit count; hits are 11 floats each: [px, py, pz, nx, ny, nz, fraction, bodySlot, shapeDesc, triangleIndex, shapeIndex] */
     _bx_World_CastRay(world: number, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, categoryBits: number, maskBits: number, ignoreBody: number, hitSensors: number, closestOnly: number): number;
+    /**
+     * Casts the hull of `count` points (xyz floats at `points`, relative to the origin) grown by `radius` along
+     * (dx, dy, dz). Hits are written as `_bx_World_CastRay` writes them, the fraction being where the surfaces touch.
+     */
+    _bx_World_CastShape(world: number, ox: number, oy: number, oz: number, points: number, count: number, radius: number, dx: number, dy: number, dz: number, categoryBits: number, maskBits: number, ignoreBody: number, closestOnly: number): number;
+    /** Every shape the hull of the points grown by `radius` overlaps, written from `_bx_OverlapsPtr` as [bodySlot, shapeIndex, shapeDesc]. */
+    _bx_World_OverlapShape(world: number, ox: number, oy: number, oz: number, points: number, count: number, radius: number, categoryBits: number, maskBits: number, ignoreBody: number): number;
+    _bx_OverlapsPtr(): number;
+    /** Shape `index`'s geometry in the body's frame, from `_bx_GeometryPtr`: sphere [c, r], capsule [c1, c2, r], or hull points. Returns the float count. */
+    _bx_Body_GetShapeGeometry(body: number, index: number): number;
+    _bx_GeometryPtr(): number;
 }
 
 export type Box3DModule = Box3DExports & Box3DHeap;

@@ -253,6 +253,17 @@ Box3D extras on the plugin: `explode`, `createWheelJoint` (suspension, steering,
 `setShapeFilterGroup`, `setShapeRollingResistance`, `setAllowFastRotation`, `getStats`. `PhysicsCharacterController`
 is not supported yet, it depends on Havok internals.
 
+**Beyond Babylon's API.** A simulation that drives the module directly, without Babylon, also has these raw exports
+(typed in `lib/*/box3d.d.ts`, tested in `test/wasm.*.test.ts`):
+
+| exports | what they do |
+| --- | --- |
+| `bx_Body_GetContacts`, `bx_BodyContactsPtr` | every touching manifold on a body as the body feels it: the shapes on both sides by index, the normal it is pushed along, friction and twist, and per point the position, separation, impulses, approach speed, and the triangle and material met on a mesh or height field |
+| `bx_Body_SetShapeHull`, `bx_Body_TranslateShape`, `bx_Body_SetShapeFilter`, `bx_Body_RemoveShape`, `bx_Body_HasShape`, `bx_Body_GetShapeInfo` | per-shape handles: change one of a body's shapes and reset only its contacts, where `bx_Body_SetShape` rebuilds them all. A shape keeps its index for the body's lifetime, removed or not, and contact events (two floats appended) and ray hits (the last float) carry it |
+| `bx_Body_SetShapeCrush`, `bx_Body_GetShapeCrush` | crushable contacts, see [Patches to Box3D](#patches-to-box3d) |
+| `bx_World_CastShape`, `bx_World_OverlapShape`, `bx_OverlapsPtr` | a convex point cloud with a radius, from an origin given in doubles, cast along a translation or tested for overlap. The cast's fraction is where the surfaces touch: Box3D stops its own casts a linear slop short of that, and the shim moves the fraction on |
+| `bx_Body_GetShapeGeometry`, `bx_GeometryPtr` | a shape's sphere, capsule or hull points, in the body's frame |
+
 Box3D creates shapes on bodies while Babylon creates shapes standalone, so a `PhysicsShape` is a description that
 is instantiated on every body it is set on. Changing its filter masks, material or density is applied to the live
 Box3D shapes in place; only geometry, children and the trigger flag rebuild them. Hull data is copied into Box3D's world database, mesh and height field

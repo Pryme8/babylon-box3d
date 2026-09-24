@@ -739,12 +739,14 @@ BX_EXPORT void bx_World_GetStats( int w )
 // Events
 // ---------------------------------------------------------------------------------------------
 
+static int bxShapeIndex( const bxBody* body, b3ShapeId shapeId );
+
 static bxFloatBuffer s_moveEvents;
 static bxFloatBuffer s_contactEvents;
 static bxFloatBuffer s_sensorEvents;
 
 #define BX_MOVE_EVENT_STRIDE 9
-#define BX_CONTACT_EVENT_STRIDE 12
+#define BX_CONTACT_EVENT_STRIDE 14
 #define BX_SENSOR_EVENT_STRIDE 5
 
 BX_EXPORT float* bx_MoveEventsPtr( void )
@@ -836,9 +838,10 @@ static void bxWriteBeginTouchData( float* out, b3ContactId contactId, b3ShapeId 
 	out[6] = impulse;
 }
 
-/// Each record: [kind (0 begin, 1 end, 2 hit), shapeDescA, shapeDescB, bodyA, bodyB, px, py, pz, nx, ny, nz, value]
-/// Begin events carry the contact point, normal and the total normal impulse of the step, hit events the point, normal
-/// and approach speed, end events nothing.
+/// Each record: [kind (0 begin, 1 end, 2 hit), shapeDescA, shapeDescB, bodyA, bodyB, px, py, pz, nx, ny, nz, value,
+/// shapeIndexA, shapeIndexB]. Begin events carry the contact point, normal and the total normal impulse of the step, hit
+/// events the point, normal and approach speed, end events nothing. The shape indices are each shape's place among its
+/// body's shapes, which it keeps for the body's lifetime (-1 if not found).
 BX_EXPORT int bx_World_GetContactEvents( int w )
 {
 	b3WorldId worldId = bxGetWorld( w );
@@ -867,6 +870,8 @@ BX_EXPORT int bx_World_GetContactEvents( int w )
 		out[2] = (float)bxDescSlotFromShape( e->shapeIdB );
 		out[3] = (float)bodyA;
 		out[4] = (float)bodyB;
+		out[12] = (float)bxShapeIndex( s_bodies + bodyA, e->shapeIdA );
+		out[13] = (float)bxShapeIndex( s_bodies + bodyB, e->shapeIdB );
 		bxWriteBeginTouchData( out + 5, e->contactId, e->shapeIdA );
 		out += BX_CONTACT_EVENT_STRIDE;
 		count += 1;
@@ -886,6 +891,8 @@ BX_EXPORT int bx_World_GetContactEvents( int w )
 		out[2] = (float)bxDescSlotFromShape( e->shapeIdB );
 		out[3] = (float)bodyA;
 		out[4] = (float)bodyB;
+		out[12] = (float)bxShapeIndex( s_bodies + bodyA, e->shapeIdA );
+		out[13] = (float)bxShapeIndex( s_bodies + bodyB, e->shapeIdB );
 		out[5] = e->point.x;
 		out[6] = e->point.y;
 		out[7] = e->point.z;
@@ -911,6 +918,8 @@ BX_EXPORT int bx_World_GetContactEvents( int w )
 		out[2] = (float)bxDescSlotFromShape( e->shapeIdB );
 		out[3] = (float)bodyA;
 		out[4] = (float)bodyB;
+		out[12] = (float)bxShapeIndex( s_bodies + bodyA, e->shapeIdA );
+		out[13] = (float)bxShapeIndex( s_bodies + bodyB, e->shapeIdB );
 		memset( out + 5, 0, 7 * sizeof( float ) );
 		out += BX_CONTACT_EVENT_STRIDE;
 		count += 1;
@@ -1276,6 +1285,150 @@ BX_EXPORT void bx_Body_GetShapeCrush( int slot, int index )
 	s_scratch[1] = b3Shape_IsCrushPlastic( body->shapes[index] ) ? 1.0f : 0.0f;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Contact readback
+// ---------------------------------------------------------------------------------------------
+
+static bxFloatBuffer s_bodyContacts;
+static b3ContactData* s_contactData;
+static int s_contactDataCapacity;
+
+#define BX_BODY_CONTACT_STRIDE 48
+#define BX_BODY_CONTACT_POINT_STRIDE 9
+
+BX_EXPORT float* bx_BodyContactsPtr( void )
+{
+	return s_bodyContacts.data;
+}
+
+/// The index of shapeId among the body's shapes, or -1.
+static int bxShapeIndex( const bxBody* body, b3ShapeId shapeId )
+{
+	for ( int i = 0; i < body->shapeCount; ++i )
+	{
+		if ( B3_ID_EQUALS( body->shapes[i], shapeId ) )
+		{
+			return i;
+		}
+	}
+	return -1;
+}
+
+/// The material index a contact point meets on a mesh or height field shape: the triangle's for a mesh, its cell's
+/// for a height field, as the description was given them. 0 for anything else, or a shape without materials.
+static int bxContactMaterial( const bxBody* body, int shapeIndex, int triangleIndex )
+{
+	if ( body == NULL || shapeIndex < 0 || triangleIndex < 0 )
+	{
+		return 0;
+	}
+	int geomSlot = body->geomDescs[shapeIndex];
+	if ( geomSlot <= 0 || geomSlot >= s_descCount || s_descs[geomSlot].alive == 0 )
+	{
+		return 0;
+	}
+	const bxShapeDesc* geom = s_descs + geomSlot;
+	if ( geom->kind == bx_heightFieldDesc && geom->heightField != NULL )
+	{
+		const uint8_t* cells = b3GetHeightFieldMaterialIndices( geom->heightField );
+		return cells != NULL ? cells[triangleIndex >> 1] : 0;
+	}
+	if ( geom->kind == bx_meshDesc && geom->mesh != NULL )
+	{
+		const uint8_t* triangles = b3GetMeshMaterialIndices( geom->mesh );
+		return triangles != NULL ? triangles[triangleIndex] : 0;
+	}
+	return 0;
+}
+
+/// Every touching contact manifold on the body, as the body feels it, written from bx_BodyContactsPtr. Speculative
+/// points are included; a point that carried no impulse this step has a total normal impulse of zero.
+/// Each record, 48 floats:
+///   [0] this body's shape index, [1] the other body's slot (0 if none), [2] the other body's shape index (-1 if
+///   unknown), [3] the other shape's description slot, [4..6] the unit normal along which the other shape pushes this
+///   body, [7..9] the friction impulse on this body and [10] the twist impulse about the normal, both of the last
+///   substep, [11] the point count (1 to 4),
+///   then 4 points of 9: [x, y, z] in world space, separation (negative if penetrating), normal impulse of the last
+///   substep (so the force is that over the substep), Box3D's total normal impulse (summed over every solver pass
+///   of every substep, so not a physical impulse: nonzero means the point carried load this step), relative normal
+///   velocity before the solve (negative when approaching), the triangle index on a mesh or height field (-1 if
+///   none), and the material index there.
+BX_EXPORT int bx_Body_GetContacts( int slot )
+{
+	s_bodyContacts.count = 0;
+	BX_BODY_RET( slot, 0 );
+
+	int capacity = b3Body_GetContactCapacity( body->id );
+	if ( capacity > s_contactDataCapacity )
+	{
+		s_contactDataCapacity = capacity;
+		s_contactData = (b3ContactData*)realloc( s_contactData, (size_t)capacity * sizeof( b3ContactData ) );
+	}
+	int contactCount = capacity > 0 ? b3Body_GetContactData( body->id, s_contactData, capacity ) : 0;
+
+	int manifoldTotal = 0;
+	for ( int i = 0; i < contactCount; ++i )
+	{
+		manifoldTotal += s_contactData[i].manifoldCount;
+	}
+	bxFloatBuffer_Reserve( &s_bodyContacts, manifoldTotal * BX_BODY_CONTACT_STRIDE );
+
+	b3Pos center = b3Body_GetWorldCenter( body->id );
+	float* out = s_bodyContacts.data;
+	int count = 0;
+	for ( int i = 0; i < contactCount; ++i )
+	{
+		const b3ContactData* data = s_contactData + i;
+		int selfIsA = B3_ID_EQUALS( b3Shape_GetBody( data->shapeIdA ), body->id );
+		b3ShapeId selfShape = selfIsA ? data->shapeIdA : data->shapeIdB;
+		b3ShapeId otherShape = selfIsA ? data->shapeIdB : data->shapeIdA;
+		int otherSlot = bxBodySlotFromShape( otherShape );
+		const bxBody* other =
+			otherSlot > 0 && otherSlot < s_bodyCount && s_bodies[otherSlot].alive ? s_bodies + otherSlot : NULL;
+		int selfIndex = bxShapeIndex( body, selfShape );
+		int otherIndex = other != NULL ? bxShapeIndex( other, otherShape ) : -1;
+		// Box3D's normal points from shape A to shape B, and the friction and twist impulses act positively on B.
+		float sign = selfIsA ? -1.0f : 1.0f;
+
+		for ( int m = 0; m < data->manifoldCount; ++m )
+		{
+			const b3Manifold* manifold = data->manifolds + m;
+			memset( out, 0, BX_BODY_CONTACT_STRIDE * sizeof( float ) );
+			out[0] = (float)selfIndex;
+			out[1] = (float)( other != NULL ? otherSlot : 0 );
+			out[2] = (float)otherIndex;
+			out[3] = (float)bxDescSlotFromShape( otherShape );
+			out[4] = sign * manifold->normal.x;
+			out[5] = sign * manifold->normal.y;
+			out[6] = sign * manifold->normal.z;
+			out[7] = sign * manifold->frictionImpulse.x;
+			out[8] = sign * manifold->frictionImpulse.y;
+			out[9] = sign * manifold->frictionImpulse.z;
+			out[10] = manifold->twistImpulse;
+			out[11] = (float)manifold->pointCount;
+			for ( int p = 0; p < manifold->pointCount; ++p )
+			{
+				const b3ManifoldPoint* mp = manifold->points + p;
+				float* po = out + 12 + p * BX_BODY_CONTACT_POINT_STRIDE;
+				b3Pos point = b3OffsetPos( center, selfIsA ? mp->anchorA : mp->anchorB );
+				po[0] = (float)point.x;
+				po[1] = (float)point.y;
+				po[2] = (float)point.z;
+				po[3] = mp->separation;
+				po[4] = mp->normalImpulse;
+				po[5] = mp->totalNormalImpulse;
+				po[6] = mp->normalVelocity;
+				po[7] = (float)mp->triangleIndex;
+				po[8] = (float)bxContactMaterial( other, otherIndex, mp->triangleIndex );
+			}
+			out += BX_BODY_CONTACT_STRIDE;
+			count += 1;
+		}
+	}
+	s_bodyContacts.count = count;
+	return count;
+}
+
 BX_EXPORT void bx_Body_AllowFastRotation( int slot, int flag )
 {
 	BX_BODY( slot );
@@ -1516,17 +1669,23 @@ BX_EXPORT int bx_ShapeDesc_CreateCylinder( float height, float radius, int sides
 	return slot;
 }
 
-/// points: pointCount * 3 floats
-BX_EXPORT int bx_ShapeDesc_CreateHull( const float* points, int pointCount )
+/// A hull of the points, or NULL. Box3D hulls are limited to 128 vertices, faces and edges. Dense meshes (a torus knot,
+/// a sphere) blow the edge budget long before the vertex budget, so simplify progressively until the builder accepts it.
+static b3HullData* bxCreateHull( const float* points, int pointCount )
 {
-	// Box3D hulls are limited to 128 vertices, faces and edges. Dense meshes (a torus knot, a sphere) blow the
-	// edge budget long before the vertex budget, so simplify progressively until the builder accepts it.
 	static const int s_vertexBudgets[] = { 40, 28, 20, 14, 10, 8 };
 	b3HullData* hull = NULL;
 	for ( int i = 0; i < (int)( sizeof( s_vertexBudgets ) / sizeof( s_vertexBudgets[0] ) ) && hull == NULL; ++i )
 	{
 		hull = b3CreateHull( (const b3Vec3*)points, pointCount, s_vertexBudgets[i] );
 	}
+	return hull;
+}
+
+/// points: pointCount * 3 floats
+BX_EXPORT int bx_ShapeDesc_CreateHull( const float* points, int pointCount )
+{
+	b3HullData* hull = bxCreateHull( points, pointCount );
 	if ( hull == NULL )
 	{
 		return 0;
@@ -2152,6 +2311,178 @@ BX_EXPORT void bx_Body_SetShape( int slot, int descSlot )
 		bxInstantiate( body, descSlot, b3Transform_identity, b3Vec3_one, 0 );
 	}
 	b3Body_ApplyMassFromShapes( body->id );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Per-shape handles: change one of a body's shapes without rebuilding the others. Changing a shape resets only its own
+// contacts, where bx_Body_SetShape drops every contact the body has. A shape keeps its index for the body's lifetime,
+// removed or not, so indices in contacts, events and ray hits stay valid. None of these changes the body's mass.
+// ---------------------------------------------------------------------------------------------
+
+static b3ShapeId bxBodyShape( int slot, int index )
+{
+	bxBody* body = bxGetBody( slot );
+	if ( body == NULL || index < 0 || index >= body->shapeCount || b3Shape_IsValid( body->shapes[index] ) == false )
+	{
+		return b3_nullShapeId;
+	}
+	return body->shapes[index];
+}
+
+/// Replaces shape `index` with the hull of the points, given in the body's frame. Returns 1, or 0 when there is no such
+/// shape or the points make no hull.
+BX_EXPORT int bx_Body_SetShapeHull( int slot, int index, const float* points, int pointCount )
+{
+	b3ShapeId shapeId = bxBodyShape( slot, index );
+	if ( B3_IS_NULL( shapeId ) )
+	{
+		return 0;
+	}
+	b3HullData* hull = bxCreateHull( points, pointCount );
+	if ( hull == NULL )
+	{
+		return 0;
+	}
+	// the world keeps its own copy
+	b3Shape_SetHull( shapeId, hull );
+	b3DestroyHull( hull );
+	return 1;
+}
+
+/// Moves shape `index` by (dx, dy, dz) in the body's frame. Works on hulls, spheres and capsules.
+BX_EXPORT int bx_Body_TranslateShape( int slot, int index, float dx, float dy, float dz )
+{
+	b3ShapeId shapeId = bxBodyShape( slot, index );
+	if ( B3_IS_NULL( shapeId ) )
+	{
+		return 0;
+	}
+	b3Vec3 offset = bxVec3( dx, dy, dz );
+	switch ( b3Shape_GetType( shapeId ) )
+	{
+		case b3_hullShape:
+		{
+			b3Transform xf = { offset, b3Quat_identity };
+			b3HullData* moved = b3CloneAndTransformHull( b3Shape_GetHull( shapeId ), xf, b3Vec3_one );
+			if ( moved == NULL )
+			{
+				return 0;
+			}
+			b3Shape_SetHull( shapeId, moved );
+			b3DestroyHull( moved );
+			return 1;
+		}
+		case b3_sphereShape:
+		{
+			b3Sphere sphere = b3Shape_GetSphere( shapeId );
+			sphere.center = b3Add( sphere.center, offset );
+			b3Shape_SetSphere( shapeId, &sphere );
+			return 1;
+		}
+		case b3_capsuleShape:
+		{
+			b3Capsule capsule = b3Shape_GetCapsule( shapeId );
+			capsule.center1 = b3Add( capsule.center1, offset );
+			capsule.center2 = b3Add( capsule.center2, offset );
+			b3Shape_SetCapsule( shapeId, &capsule );
+			return 1;
+		}
+		default:
+			return 0;
+	}
+}
+
+/// Sets shape `index`'s collision filter. Its contacts are re-found on the next step.
+BX_EXPORT void bx_Body_SetShapeFilter( int slot, int index, unsigned int categoryBits, unsigned int maskBits, int groupIndex )
+{
+	b3ShapeId shapeId = bxBodyShape( slot, index );
+	if ( B3_IS_NULL( shapeId ) )
+	{
+		return;
+	}
+	b3Filter filter = b3Shape_GetFilter( shapeId );
+	filter.categoryBits = (uint64_t)categoryBits;
+	filter.maskBits = (uint64_t)maskBits;
+	filter.groupIndex = groupIndex;
+	b3Shape_SetFilter( shapeId, filter, true );
+}
+
+/// Removes shape `index` from the body. The other shapes keep their indices, and this one stays empty.
+BX_EXPORT void bx_Body_RemoveShape( int slot, int index )
+{
+	b3ShapeId shapeId = bxBodyShape( slot, index );
+	if ( B3_IS_NULL( shapeId ) )
+	{
+		return;
+	}
+	bxBody* body = bxGetBody( slot );
+	b3DestroyShape( shapeId, false );
+	int geomSlot = body->geomDescs[index];
+	if ( geomSlot != body->shapeDescs[index] )
+	{
+		// a mesh baked for this body alone, nothing else refers to it
+		bx_ShapeDesc_Destroy( geomSlot );
+	}
+	bxDescRelease( geomSlot );
+	body->shapes[index] = b3_nullShapeId;
+	body->shapeDescs[index] = 0;
+	body->geomDescs[index] = 0;
+}
+
+/// Is there a shape at `index`? 0 once it has been removed.
+BX_EXPORT int bx_Body_HasShape( int slot, int index )
+{
+	return B3_IS_NON_NULL( bxBodyShape( slot, index ) ) ? 1 : 0;
+}
+
+/// scratch: [kind (0 sphere, 1 capsule, 2 hull, else -1), vertexCount, aabb min xyz, aabb max xyz] of shape `index`,
+/// its bounds in the body's frame, so a test or the sim can see where a changed shape now is.
+BX_EXPORT void bx_Body_GetShapeInfo( int slot, int index )
+{
+	memset( s_scratch, 0, 8 * sizeof( float ) );
+	s_scratch[0] = -1.0f;
+	b3ShapeId shapeId = bxBodyShape( slot, index );
+	if ( B3_IS_NULL( shapeId ) )
+	{
+		return;
+	}
+	b3AABB box = { { FLT_MAX, FLT_MAX, FLT_MAX }, { -FLT_MAX, -FLT_MAX, -FLT_MAX } };
+	switch ( b3Shape_GetType( shapeId ) )
+	{
+		case b3_sphereShape:
+		{
+			b3Sphere s = b3Shape_GetSphere( shapeId );
+			b3Vec3 r = { s.radius, s.radius, s.radius };
+			box = (b3AABB){ b3Sub( s.center, r ), b3Add( s.center, r ) };
+			s_scratch[0] = 0.0f;
+			break;
+		}
+		case b3_capsuleShape:
+		{
+			b3Capsule c = b3Shape_GetCapsule( shapeId );
+			b3Vec3 r = { c.radius, c.radius, c.radius };
+			box = (b3AABB){ b3Sub( b3Min( c.center1, c.center2 ), r ), b3Add( b3Max( c.center1, c.center2 ), r ) };
+			s_scratch[0] = 1.0f;
+			break;
+		}
+		case b3_hullShape:
+		{
+			const b3HullData* hull = b3Shape_GetHull( shapeId );
+			const b3Vec3* points = b3GetHullPoints( hull );
+			for ( int i = 0; i < hull->vertexCount; ++i )
+			{
+				box.lowerBound = b3Min( box.lowerBound, points[i] );
+				box.upperBound = b3Max( box.upperBound, points[i] );
+			}
+			s_scratch[0] = 2.0f;
+			s_scratch[1] = (float)hull->vertexCount;
+			break;
+		}
+		default:
+			return;
+	}
+	bxWriteVec3( 2, box.lowerBound );
+	bxWriteVec3( 5, box.upperBound );
 }
 
 /// Properties that can be changed on live shapes, see bx_Body_SyncShapeDesc.
@@ -2941,13 +3272,13 @@ static float bxRayCallback( b3ShapeId shapeId, b3Pos point, b3Vec3 normal, float
 	out[7] = (float)bodySlot;
 	out[8] = (float)bxDescSlotFromShape( shapeId );
 	out[9] = (float)triangleIndex;
-	out[10] = 0.0f;
+	out[10] = (float)bxShapeIndex( s_bodies + bodySlot, shapeId );
 	ctx->count = ctx->closestOnly ? 1 : ctx->count + 1;
 	return ctx->closestOnly ? fraction : 1.0f;
 }
 
 /// Casts a ray from origin along translation. Returns the number of hits written to bx_RayHitsPtr().
-/// Each hit: [px, py, pz, nx, ny, nz, fraction, bodySlot, shapeDesc, triangleIndex, reserved]
+/// Each hit: [px, py, pz, nx, ny, nz, fraction, bodySlot, shapeDesc, triangleIndex, shapeIndex]
 BX_EXPORT int bx_World_CastRay( int w, float ox, float oy, float oz, float dx, float dy, float dz, unsigned int categoryBits,
 								unsigned int maskBits, int ignoreBody, int hitSensors, int closestOnly )
 {
@@ -2962,4 +3293,225 @@ BX_EXPORT int bx_World_CastRay( int w, float ox, float oy, float oz, float dx, f
 	filter.maskBits = (uint64_t)maskBits;
 	b3World_CastRay( worldId, bxVec3( ox, oy, oz ), bxVec3( dx, dy, dz ), filter, bxRayCallback, &ctx );
 	return ctx.count;
+}
+
+/// A world position from three doubles: exact in a double precision build, rounded to float in the default one.
+static b3Pos bxPos( double x, double y, double z )
+{
+	b3Pos p = { x, y, z };
+	return p;
+}
+
+typedef struct bxShapeCastContext
+{
+	int ignoreBody;
+	int closestOnly;
+	int count;
+	float radius;
+	b3Vec3 translation;
+} bxShapeCastContext;
+
+// Box3D's shape cast stops where the two cores are max(slop, radii - slop) apart, so that a body moved to the hit is
+// left just short of touching: 5 mm short with no radius, 5 mm too deep once the radii pass 1 cm. A query wants the
+// touch itself, so each fraction is moved on by the gap left, at the rate the cast closes it along the hit normal.
+// Box3D is never told to clip, since it would clip on its own fractions: every hit comes back, and a closest-only cast
+// keeps the one that touches first.
+static float bxShapeCastCallback( b3ShapeId shapeId, b3Pos point, b3Vec3 normal, float fraction, uint64_t userMaterialId,
+								  int triangleIndex, int childIndex, void* context )
+{
+	(void)userMaterialId;
+	(void)childIndex;
+	bxShapeCastContext* ctx = (bxShapeCastContext*)context;
+	if ( b3Shape_IsSensor( shapeId ) )
+	{
+		return -1.0f;
+	}
+	int bodySlot = bxBodySlotFromShape( shapeId );
+	if ( bodySlot == 0 || bodySlot == ctx->ignoreBody )
+	{
+		return -1.0f;
+	}
+
+	float otherRadius = 0.0f;
+	b3ShapeType type = b3Shape_GetType( shapeId );
+	if ( type == b3_sphereShape )
+	{
+		otherRadius = b3Shape_GetSphere( shapeId ).radius;
+	}
+	else if ( type == b3_capsuleShape )
+	{
+		otherRadius = b3Shape_GetCapsule( shapeId ).radius;
+	}
+	float totalRadius = ctx->radius + otherRadius;
+	float target = b3MaxFloat( B3_LINEAR_SLOP, totalRadius - B3_LINEAR_SLOP );
+	float closing = -b3Dot( ctx->translation, normal );
+	float touch = closing > FLT_EPSILON ? fraction + ( target - totalRadius ) / closing : fraction;
+	if ( touch > 1.0f )
+	{
+		// the cast ends before the surfaces meet
+		return 1.0f;
+	}
+	touch = b3MaxFloat( touch, 0.0f );
+
+	int index = ctx->count;
+	if ( ctx->closestOnly )
+	{
+		if ( ctx->count > 0 && s_rayHits.data[6] <= touch )
+		{
+			return 1.0f;
+		}
+		index = 0;
+	}
+	bxFloatBuffer_Reserve( &s_rayHits, ( index + 1 ) * BX_RAY_HIT_STRIDE );
+	float* out = s_rayHits.data + index * BX_RAY_HIT_STRIDE;
+	out[0] = (float)point.x;
+	out[1] = (float)point.y;
+	out[2] = (float)point.z;
+	out[3] = normal.x;
+	out[4] = normal.y;
+	out[5] = normal.z;
+	out[6] = touch;
+	out[7] = (float)bodySlot;
+	out[8] = (float)bxDescSlotFromShape( shapeId );
+	out[9] = (float)triangleIndex;
+	out[10] = (float)bxShapeIndex( s_bodies + bodySlot, shapeId );
+	ctx->count = ctx->closestOnly ? 1 : ctx->count + 1;
+	return 1.0f;
+}
+
+/// Casts a convex shape, the hull of `count` points (xyz floats, relative to the origin) grown by `radius`, from the
+/// origin along the translation. The origin is given in doubles so a cast stays precise far from the world origin in a
+/// double precision build. Hits are written to bx_RayHitsPtr() as bx_World_CastRay writes them: the fraction is how far
+/// along the translation the shape goes before its surface touches, and the point is where. Returns the hit count.
+BX_EXPORT int bx_World_CastShape( int w, double ox, double oy, double oz, const float* points, int count, float radius, float dx,
+								  float dy, float dz, unsigned int categoryBits, unsigned int maskBits, int ignoreBody, int closestOnly )
+{
+	b3WorldId worldId = bxGetWorld( w );
+	if ( B3_IS_NULL( worldId ) || count <= 0 || count > B3_MAX_SHAPE_CAST_POINTS )
+	{
+		return 0;
+	}
+	bxShapeCastContext ctx = { ignoreBody, closestOnly, 0, radius, bxVec3( dx, dy, dz ) };
+	b3QueryFilter filter = b3DefaultQueryFilter();
+	filter.categoryBits = (uint64_t)categoryBits;
+	filter.maskBits = (uint64_t)maskBits;
+	b3ShapeProxy proxy = { (const b3Vec3*)points, count, radius };
+	b3World_CastShape( worldId, bxPos( ox, oy, oz ), &proxy, bxVec3( dx, dy, dz ), filter, bxShapeCastCallback, &ctx );
+	return ctx.count;
+}
+
+static bxFloatBuffer s_overlaps;
+#define BX_OVERLAP_STRIDE 3
+
+BX_EXPORT float* bx_OverlapsPtr( void )
+{
+	return s_overlaps.data;
+}
+
+typedef struct bxOverlapContext
+{
+	int ignoreBody;
+	int count;
+} bxOverlapContext;
+
+static bool bxOverlapCallback( b3ShapeId shapeId, void* context )
+{
+	bxOverlapContext* ctx = (bxOverlapContext*)context;
+	if ( b3Shape_IsSensor( shapeId ) )
+	{
+		return true;
+	}
+	int bodySlot = bxBodySlotFromShape( shapeId );
+	if ( bodySlot == 0 || bodySlot == ctx->ignoreBody )
+	{
+		return true;
+	}
+	bxFloatBuffer_Reserve( &s_overlaps, ( ctx->count + 1 ) * BX_OVERLAP_STRIDE );
+	float* out = s_overlaps.data + ctx->count * BX_OVERLAP_STRIDE;
+	out[0] = (float)bodySlot;
+	out[1] = (float)bxShapeIndex( s_bodies + bodySlot, shapeId );
+	out[2] = (float)bxDescSlotFromShape( shapeId );
+	ctx->count += 1;
+	return true;
+}
+
+/// Every shape the convex shape (the hull of `count` points relative to the origin, grown by `radius`) overlaps,
+/// written to bx_OverlapsPtr() as [bodySlot, shapeIndex, shapeDesc]. Returns the count.
+BX_EXPORT int bx_World_OverlapShape( int w, double ox, double oy, double oz, const float* points, int count, float radius,
+									 unsigned int categoryBits, unsigned int maskBits, int ignoreBody )
+{
+	b3WorldId worldId = bxGetWorld( w );
+	if ( B3_IS_NULL( worldId ) || count <= 0 || count > B3_MAX_SHAPE_CAST_POINTS )
+	{
+		return 0;
+	}
+	bxOverlapContext ctx = { ignoreBody, 0 };
+	b3QueryFilter filter = b3DefaultQueryFilter();
+	filter.categoryBits = (uint64_t)categoryBits;
+	filter.maskBits = (uint64_t)maskBits;
+	b3ShapeProxy proxy = { (const b3Vec3*)points, count, radius };
+	b3World_OverlapShape( worldId, bxPos( ox, oy, oz ), &proxy, filter, bxOverlapCallback, &ctx );
+	return ctx.count;
+}
+
+static bxFloatBuffer s_geometry;
+
+BX_EXPORT float* bx_GeometryPtr( void )
+{
+	return s_geometry.data;
+}
+
+/// The geometry of the body's shape `index`, in the body's frame, written to bx_GeometryPtr(): a sphere as
+/// [cx, cy, cz, radius], a capsule as [x1, y1, z1, x2, y2, z2, radius], a hull as its points, three floats each. Returns
+/// the float count, 0 when there is no such shape or it is of another kind (bx_Body_GetShapeInfo says which).
+BX_EXPORT int bx_Body_GetShapeGeometry( int slot, int index )
+{
+	s_geometry.count = 0;
+	b3ShapeId shapeId = bxBodyShape( slot, index );
+	if ( B3_IS_NULL( shapeId ) )
+	{
+		return 0;
+	}
+	switch ( b3Shape_GetType( shapeId ) )
+	{
+		case b3_sphereShape:
+		{
+			b3Sphere s = b3Shape_GetSphere( shapeId );
+			bxFloatBuffer_Reserve( &s_geometry, 4 );
+			float* out = s_geometry.data;
+			out[0] = s.center.x;
+			out[1] = s.center.y;
+			out[2] = s.center.z;
+			out[3] = s.radius;
+			s_geometry.count = 4;
+			break;
+		}
+		case b3_capsuleShape:
+		{
+			b3Capsule c = b3Shape_GetCapsule( shapeId );
+			bxFloatBuffer_Reserve( &s_geometry, 7 );
+			float* out = s_geometry.data;
+			out[0] = c.center1.x;
+			out[1] = c.center1.y;
+			out[2] = c.center1.z;
+			out[3] = c.center2.x;
+			out[4] = c.center2.y;
+			out[5] = c.center2.z;
+			out[6] = c.radius;
+			s_geometry.count = 7;
+			break;
+		}
+		case b3_hullShape:
+		{
+			const b3HullData* hull = b3Shape_GetHull( shapeId );
+			const b3Vec3* points = b3GetHullPoints( hull );
+			bxFloatBuffer_Reserve( &s_geometry, 3 * hull->vertexCount );
+			memcpy( s_geometry.data, points, (size_t)hull->vertexCount * sizeof( b3Vec3 ) );
+			s_geometry.count = 3 * hull->vertexCount;
+			break;
+		}
+		default:
+			break;
+	}
+	return s_geometry.count;
 }

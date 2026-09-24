@@ -118,12 +118,13 @@ function createModule() {
             moveEventCount = records.length;
             heap.set(records.flat(), MoveEventsOffset);
         },
-        // records: [kind, shapeA, shapeB, bodyA, bodyB, px, py, pz, nx, ny, nz, approachSpeed]
+        // records: [kind, shapeA, shapeB, bodyA, bodyB, px, py, pz, nx, ny, nz, approachSpeed], padded with the two
+        // shape indices the shim appends
         setContactEvents(records: number[][]) {
             contactEventCount = records.length;
-            heap.set(records.flat(), ContactEventsOffset);
+            heap.set(records.flatMap((record) => [...record, 0, 0].slice(0, 14)), ContactEventsOffset);
         },
-        // hits: [px, py, pz, nx, ny, nz, fraction, bodySlot, shapeDesc, triangleIndex, reserved]
+        // hits: [px, py, pz, nx, ny, nz, fraction, bodySlot, shapeDesc, triangleIndex, shapeIndex]
         setRayHits(hits: number[][]) {
             rayHitCount = hits.length;
             heap.set(hits.flat(), RayHitsOffset);

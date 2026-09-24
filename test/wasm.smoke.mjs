@@ -41,10 +41,10 @@ let contactHit = 0;
 for (let i = 0; i < 180; i++) {
     b3._bx_World_Step(world, 1 / 60, 4);
     const events = b3._bx_World_GetContactEvents(world);
-    const buf = new Float32Array(b3.HEAPF32.buffer, b3._bx_ContactEventsPtr(), events * 12);
+    const buf = new Float32Array(b3.HEAPF32.buffer, b3._bx_ContactEventsPtr(), events * 14);
     for (let e = 0; e < events; e++) {
-        if (buf[e * 12] === 0) contactBegin++;
-        if (buf[e * 12] === 2) contactHit++;
+        if (buf[e * 14] === 0) contactBegin++;
+        if (buf[e * 14] === 2) contactHit++;
     }
 }
 b3._bx_Body_GetTransform(ball);
