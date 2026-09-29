@@ -1,0 +1,506 @@
+diff --git a/src/hull.c b/src/hull.c
+index 84cd8ed..a9d5ead 100644
+--- a/src/hull.c
++++ b/src/hull.c
+@@ -96,12 +96,17 @@ typedef struct b3HorizonFrame
+ 	b3QHFace* face;
+ 	b3QHHalfEdge* startEdge; // ring termination sentinel
+ 	b3QHHalfEdge* edge;		 // next edge to process
++	int steps;				 // edges processed in this ring, see b3HullBuilder_Exceeded
+ 	bool started;			 // false until the first edge of this ring has been processed
+ } b3HorizonFrame;
+ 
+ // All working memory for one hull build, carved from a single b3Alloc block.
+ typedef struct b3HullBuilder
+ {
++	// Set when the half-edge mesh has turned out inconsistent, see b3HullBuilder_Exceeded. The build then
++	// stops and b3CreateHull returns NULL.
++	bool failed;
++
+ 	float tolerance;
+ 	float minRadius;
+ 	float minOutside;
+@@ -474,12 +479,35 @@ static bool b3IsEdgeConcave( const b3QHHalfEdge* edge, float tolerance )
+ 	return distance > tolerance;
+ }
+ 
+-static int b3VertexCountOfFace( const b3QHFace* face )
++// Degenerate input, such as a flat or nearly flat point set a few metres from the origin, can leave the
++// half-edge mesh inconsistent: a merge can leave two faces that share every edge, or a face ring that
++// never comes back to where it started, and a walk over either never ends. So every walk that follows
++// the mesh counts its steps here. A ring never has more edges than the pool, so a walk that takes more
++// steps than that is going round forever: the build is marked failed and b3CreateHull returns NULL. A
++// consistent mesh never reaches the limit, so every hull that was built before is built the same.
++static bool b3HullBuilder_Exceeded( b3HullBuilder* b, int* steps )
++{
++	*steps += 1;
++	if ( *steps > b->edgeCapacity )
++	{
++		b->failed = true;
++		return true;
++	}
++	return false;
++}
++
++static int b3VertexCountOfFace( b3HullBuilder* b, const b3QHFace* face )
+ {
+ 	int count = 0;
++	int steps = 0;
+ 	const b3QHHalfEdge* edge = face->edge;
+ 	do
+ 	{
++		if ( b3HullBuilder_Exceeded( b, &steps ) )
++		{
++			break;
++		}
++
+ 		count++;
+ 		edge = edge->next;
+ 	}
+@@ -525,9 +553,10 @@ static void b3LinkFaces( b3QHFace* face1, int index1, b3QHFace* face2, int index
+ 	edge2->twin = edge1;
+ }
+ 
+-static void b3NewellPlane( b3QHFace* face )
++static void b3NewellPlane( b3HullBuilder* b, b3QHFace* face )
+ {
+ 	int count = 0;
++	int steps = 0;
+ 	b3Vec3 centroid = b3Vec3_zero;
+ 	b3Vec3 normal = b3Vec3_zero;
+ 
+@@ -539,6 +568,11 @@ static void b3NewellPlane( b3QHFace* face )
+ 
+ 	do
+ 	{
++		if ( b3HullBuilder_Exceeded( b, &steps ) )
++		{
++			return;
++		}
++
+ 		b3QHHalfEdge* twin = edge->twin;
+ 		B3_ASSERT( twin->twin == edge );
+ 
+@@ -569,22 +603,28 @@ static void b3NewellPlane( b3QHFace* face )
+ }
+ 
+ #if B3_DEBUG
+-static bool b3CheckConsistency( const b3QHFace* face )
++static bool b3CheckConsistency( b3HullBuilder* b, const b3QHFace* face )
+ {
+ 	if ( face->mark == B3_MARK_DELETE )
+ 	{
+ 		return false;
+ 	}
+ 
+-	if ( b3VertexCountOfFace( face ) < 3 )
++	if ( b3VertexCountOfFace( b, face ) < 3 )
+ 	{
+ 		return false;
+ 	}
+ 
+ 	const b3QHHalfEdge* edge = face->edge;
++	int steps = 0;
+ 
+ 	do
+ 	{
++		if ( b3HullBuilder_Exceeded( b, &steps ) )
++		{
++			return false;
++		}
++
+ 		const b3QHHalfEdge* twin = edge->twin;
+ 
+ 		if ( twin == NULL )
+@@ -711,10 +751,10 @@ static bool b3HullBuilder_BuildInitialHull( b3HullBuilder* b, int pointCount, co
+ 	b3LinkFaces( face4, 0, face2, 2 );
+ 
+ #if B3_DEBUG
+-	B3_ASSERT( b3CheckConsistency( face1 ) );
+-	B3_ASSERT( b3CheckConsistency( face2 ) );
+-	B3_ASSERT( b3CheckConsistency( face3 ) );
+-	B3_ASSERT( b3CheckConsistency( face4 ) );
++	B3_ASSERT( b3CheckConsistency( b, face1 ) );
++	B3_ASSERT( b3CheckConsistency( b, face2 ) );
++	B3_ASSERT( b3CheckConsistency( b, face3 ) );
++	B3_ASSERT( b3CheckConsistency( b, face4 ) );
+ #endif
+ 
+ 	for ( int index = 0; index < pointCount; ++index )
+@@ -822,6 +862,7 @@ static void b3HullBuilder_EnterHorizonFace( b3HullBuilder* b, b3QHFace* face, b3
+ 	b3HullBuilder_DrainConflictList( b, face );
+ 
+ 	frameOut->face = face;
++	frameOut->steps = 0;
+ 	frameOut->started = false;
+ 	if ( entryEdge != NULL )
+ 	{
+@@ -854,6 +895,11 @@ static void b3HullBuilder_BuildHorizon( b3HullBuilder* b, b3QHVertex* apex, b3QH
+ 		}
+ 		f->started = true;
+ 
++		if ( b3HullBuilder_Exceeded( b, &f->steps ) )
++		{
++			return;
++		}
++
+ 		b3QHHalfEdge* edge = f->edge;
+ 		b3QHHalfEdge* twin = edge->twin;
+ 		f->edge = edge->next;
+@@ -867,11 +913,22 @@ static void b3HullBuilder_BuildHorizon( b3HullBuilder* b, b3QHVertex* apex, b3QH
+ 		if ( distance > b->minRadius )
+ 		{
+ 			B3_ASSERT( top < b->horizonStackCapacity );
++			if ( top >= b->horizonStackCapacity )
++			{
++				// only an inconsistent mesh gets this deep
++				b->failed = true;
++				return;
++			}
+ 			b3HullBuilder_EnterHorizonFace( b, twin->face, twin, &stack[top++] );
+ 		}
+ 		else
+ 		{
+ 			B3_ASSERT( b->horizonCount < b->horizonCapacity );
++			if ( b->horizonCount >= b->horizonCapacity )
++			{
++				b->failed = true;
++				return;
++			}
+ 			b->horizon[b->horizonCount++] = edge;
+ 		}
+ 	}
+@@ -906,8 +963,14 @@ static void b3HullBuilder_BuildCone( b3HullBuilder* b, b3QHVertex* apex )
+ static void b3HullBuilder_DestroyEdges( b3HullBuilder* b, b3QHHalfEdge* begin, b3QHHalfEdge* end )
+ {
+ 	b3QHHalfEdge* edge = begin;
++	int steps = 0;
+ 	while ( edge != end )
+ 	{
++		if ( b3HullBuilder_Exceeded( b, &steps ) )
++		{
++			return;
++		}
++
+ 		b3QHHalfEdge* next = edge->next;
+ 		b3HullBuilder_RetireEdge( b, edge );
+ 		edge = next;
+@@ -928,8 +991,14 @@ static void b3HullBuilder_ConnectEdges( b3HullBuilder* b, b3QHHalfEdge* prev, b3
+ 			next->face->edge = prev;
+ 		}
+ 
++		int vertexCount = b3VertexCountOfFace( b, prev->twin->face );
++		if ( b->failed )
++		{
++			return;
++		}
++
+ 		b3QHHalfEdge* twin;
+-		if ( b3VertexCountOfFace( prev->twin->face ) == 3 )
++		if ( vertexCount == 3 )
+ 		{
+ 			// Capture all 3 half-edges of the dead triangle before the rewire overwrites prev->twin.
+ 			b3QHHalfEdge* deadEdge0 = prev->twin;		// prev->twin (will be rewired below)
+@@ -983,7 +1052,7 @@ static void b3HullBuilder_ConnectEdges( b3HullBuilder* b, b3QHHalfEdge* prev, b3
+ 		}
+ 
+ 		// Twin->face changed shape; recompute its plane and refresh its cached max conflict.
+-		b3NewellPlane( twin->face );
++		b3NewellPlane( b, twin->face );
+ 		b3HullBuilder_RecacheConflicts( twin->face, b->minOutside );
+ 	}
+ 	else
+@@ -1044,8 +1113,15 @@ static void b3HullBuilder_ConnectFaces( b3HullBuilder* b, b3QHHalfEdge* edge )
+ 	b3QHHalfEdge* twinPrev = twin->prev;
+ 	b3QHHalfEdge* twinNext = twin->next;
+ 
++	// If face and twin->face share every edge (the mesh has collapsed flat), these walks never stop.
++	int steps = 0;
+ 	while ( edgePrev->twin->face == twin->face )
+ 	{
++		if ( b3HullBuilder_Exceeded( b, &steps ) )
++		{
++			return;
++		}
++
+ 		B3_ASSERT( edgePrev->twin == twinNext );
+ 		B3_ASSERT( twinNext->twin == edgePrev );
+ 
+@@ -1054,8 +1130,14 @@ static void b3HullBuilder_ConnectFaces( b3HullBuilder* b, b3QHHalfEdge* edge )
+ 	}
+ 	B3_ASSERT( edgePrev->face != twinNext->face );
+ 
++	steps = 0;
+ 	while ( edgeNext->twin->face == twin->face )
+ 	{
++		if ( b3HullBuilder_Exceeded( b, &steps ) )
++		{
++			return;
++		}
++
+ 		B3_ASSERT( edgeNext->twin == twinPrev );
+ 		B3_ASSERT( twinPrev->twin == edgeNext );
+ 
+@@ -1073,8 +1155,14 @@ static void b3HullBuilder_ConnectFaces( b3HullBuilder* b, b3QHHalfEdge* edge )
+ 	twin->face->mark = B3_MARK_DELETE;
+ 	twin->face->edge = NULL;
+ 
++	steps = 0;
+ 	for ( b3QHHalfEdge* absorbed = twinNext; absorbed != twinPrev->next; absorbed = absorbed->next )
+ 	{
++		if ( b3HullBuilder_Exceeded( b, &steps ) )
++		{
++			return;
++		}
++
+ 		absorbed->face = face;
+ 	}
+ 
+@@ -1084,29 +1172,41 @@ static void b3HullBuilder_ConnectFaces( b3HullBuilder* b, b3QHHalfEdge* edge )
+ 	b3HullBuilder_ConnectEdges( b, edgePrev, twinNext );
+ 	b3HullBuilder_ConnectEdges( b, twinPrev, edgeNext );
+ 
+-	b3NewellPlane( face );
++	b3NewellPlane( b, face );
++	if ( b->failed )
++	{
++		return;
++	}
++
+ 	// Existing conflicts now have stale distances under the new plane; AbsorbFaces will then
+ 	// add more incrementally and update the cache as it goes.
+ 	b3HullBuilder_RecacheConflicts( face, b->minOutside );
+ #if B3_DEBUG
+-	B3_ASSERT( b3CheckConsistency( face ) );
++	B3_ASSERT( b3CheckConsistency( b, face ) );
+ #endif
+ 
+ 	b3HullBuilder_AbsorbFaces( b, face );
+ }
+ 
++// Returns true after a merge, so the caller looks at the face again, unless the merge failed.
+ static bool b3HullBuilder_MergeConcave( b3HullBuilder* b, b3QHFace* face )
+ {
+ 	b3QHHalfEdge* edge = face->edge;
++	int steps = 0;
+ 
+ 	do
+ 	{
++		if ( b3HullBuilder_Exceeded( b, &steps ) )
++		{
++			return false;
++		}
++
+ 		b3QHHalfEdge* twin = edge->twin;
+ 
+ 		if ( b3IsEdgeConcave( edge, b->minRadius ) || b3IsEdgeConcave( twin, b->minRadius ) )
+ 		{
+ 			b3HullBuilder_ConnectFaces( b, edge );
+-			return true;
++			return b->failed == false;
+ 		}
+ 
+ 		edge = edge->next;
+@@ -1116,18 +1216,25 @@ static bool b3HullBuilder_MergeConcave( b3HullBuilder* b, b3QHFace* face )
+ 	return false;
+ }
+ 
++// Returns true after a merge, so the caller looks at the face again, unless the merge failed.
+ static bool b3HullBuilder_MergeCoplanar( b3HullBuilder* b, b3QHFace* face )
+ {
+ 	b3QHHalfEdge* edge = face->edge;
++	int steps = 0;
+ 
+ 	do
+ 	{
++		if ( b3HullBuilder_Exceeded( b, &steps ) )
++		{
++			return false;
++		}
++
+ 		b3QHHalfEdge* twin = edge->twin;
+ 
+ 		if ( !b3IsEdgeConvex( edge, b->minRadius ) || !b3IsEdgeConvex( twin, b->minRadius ) )
+ 		{
+ 			b3HullBuilder_ConnectFaces( b, edge );
+-			return true;
++			return b->failed == false;
+ 		}
+ 
+ 		edge = edge->next;
+@@ -1137,8 +1244,23 @@ static bool b3HullBuilder_MergeCoplanar( b3HullBuilder* b, b3QHFace* face )
+ 	return false;
+ }
+ 
++// Each merge deletes a face and no face is made while merging, so there are never more merges than the
++// pool has faces. More means the merges are going round an inconsistent mesh.
++static bool b3HullBuilder_MergedTooMuch( b3HullBuilder* b, int* merges )
++{
++	*merges += 1;
++	if ( *merges > b->faceCapacity )
++	{
++		b->failed = true;
++		return true;
++	}
++	return false;
++}
++
+ static void b3HullBuilder_MergeFaces( b3HullBuilder* b )
+ {
++	int merges = 0;
++
+ 	for ( int i = 0; i < b->coneCount; ++i )
+ 	{
+ 		b3QHFace* face = b->cone[i];
+@@ -1148,10 +1270,16 @@ static void b3HullBuilder_MergeFaces( b3HullBuilder* b )
+ 
+ 			float bestArea = 0;
+ 			b3QHHalfEdge* bestEdge = NULL;
++			int steps = 0;
+ 
+ 			b3QHHalfEdge* edge = face->edge;
+ 			do
+ 			{
++				if ( b3HullBuilder_Exceeded( b, &steps ) )
++				{
++					return;
++				}
++
+ 				b3QHHalfEdge* twin = edge->twin;
+ 				float area = twin->face->area;
+ 				if ( area > bestArea )
+@@ -1166,6 +1294,10 @@ static void b3HullBuilder_MergeFaces( b3HullBuilder* b )
+ 
+ 			B3_ASSERT( bestEdge != NULL );
+ 			b3HullBuilder_ConnectFaces( b, bestEdge );
++			if ( b->failed || b3HullBuilder_MergedTooMuch( b, &merges ) )
++			{
++				return;
++			}
+ 		}
+ 	}
+ 
+@@ -1176,6 +1308,15 @@ static void b3HullBuilder_MergeFaces( b3HullBuilder* b )
+ 		{
+ 			while ( b3HullBuilder_MergeConcave( b, face ) )
+ 			{
++				if ( b3HullBuilder_MergedTooMuch( b, &merges ) )
++				{
++					return;
++				}
++			}
++
++			if ( b->failed )
++			{
++				return;
+ 			}
+ 		}
+ 	}
+@@ -1187,6 +1328,15 @@ static void b3HullBuilder_MergeFaces( b3HullBuilder* b )
+ 		{
+ 			while ( b3HullBuilder_MergeCoplanar( b, face ) )
+ 			{
++				if ( b3HullBuilder_MergedTooMuch( b, &merges ) )
++				{
++					return;
++				}
++			}
++
++			if ( b->failed )
++			{
++				return;
+ 			}
+ 		}
+ 	}
+@@ -1253,8 +1403,14 @@ static void b3HullBuilder_ResolveFaces( b3HullBuilder* b )
+ 			// faces are already off the face list.
+ 			b3QHHalfEdge* start = face->edge;
+ 			b3QHHalfEdge* edge = start;
++			int steps = 0;
+ 			do
+ 			{
++				if ( b3HullBuilder_Exceeded( b, &steps ) )
++				{
++					return;
++				}
++
+ 				b3QHHalfEdge* next = edge->next;
+ 				b3HullBuilder_RetireEdge( b, edge );
+ 				edge = next;
+@@ -1285,6 +1441,10 @@ static void b3HullBuilder_AddVertexToHull( b3HullBuilder* b, b3QHVertex* vertex
+ 
+ 	b->horizonCount = 0;
+ 	b3HullBuilder_BuildHorizon( b, vertex, face );
++	if ( b->failed )
++	{
++		return;
++	}
+ 	B3_ASSERT( b->horizonCount >= 3 );
+ 
+ 	b->coneCount = 0;
+@@ -1292,6 +1452,10 @@ static void b3HullBuilder_AddVertexToHull( b3HullBuilder* b, b3QHVertex* vertex
+ 	B3_ASSERT( b->coneCount >= 3 );
+ 
+ 	b3HullBuilder_MergeFaces( b );
++	if ( b->failed )
++	{
++		return;
++	}
+ 	b3HullBuilder_ResolveVertices( b );
+ 	b3HullBuilder_ResolveFaces( b );
+ }
+@@ -1305,9 +1469,15 @@ static void b3HullBuilder_CleanHull( b3HullBuilder* b, b3Vec3 origin )
+ 	{
+ 		b3QHFace* face = (b3QHFace*)faceNode;
+ 		b3QHHalfEdge* edge = face->edge;
++		int steps = 0;
+ 
+ 		do
+ 		{
++			if ( b3HullBuilder_Exceeded( b, &steps ) )
++			{
++				return;
++			}
++
+ 			edge->origin->reachable = true;
+ 			edge = edge->next;
+ 			halfEdgeCount++;
+@@ -1345,7 +1515,7 @@ static void b3HullBuilder_CleanHull( b3HullBuilder* b, b3Vec3 origin )
+ }
+ 
+ #if B3_DEBUG
+-static bool b3HullBuilder_IsConsistent( const b3HullBuilder* b )
++static bool b3HullBuilder_IsConsistent( b3HullBuilder* b )
+ {
+ 	int v = b->finalVertexCount;
+ 	int e = b->finalHalfEdgeCount / 2;
+@@ -1364,7 +1534,7 @@ static bool b3HullBuilder_IsConsistent( const b3HullBuilder* b )
+ 			return false;
+ 		}
+ 
+-		if ( !b3CheckConsistency( face ) )
++		if ( !b3CheckConsistency( b, face ) )
+ 		{
+ 			return false;
+ 		}
+@@ -1452,11 +1622,20 @@ static bool b3HullBuilder_Construct( b3HullBuilder* b, const b3Vec3* points, int
+ 	while ( vertex && budget > 0 )
+ 	{
+ 		b3HullBuilder_AddVertexToHull( b, vertex );
++		if ( b->failed )
++		{
++			return false;
++		}
++
+ 		vertex = b3HullBuilder_NextConflictVertex( b );
+ 		budget -= 1;
+ 	}
+ 
+ 	b3HullBuilder_CleanHull( b, origin );
++	if ( b->failed )
++	{
++		return false;
++	}
+ 
+ #if B3_DEBUG
+ 	B3_ASSERT( b3HullBuilder_IsConsistent( b ) );
