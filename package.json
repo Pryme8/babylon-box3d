@@ -41,6 +41,22 @@
             "types": "./lib/node-threads/box3d.d.ts",
             "default": "./lib/node-threads/box3d.mjs"
         },
+        "./wasm/f64": {
+            "types": "./lib/esm-f64/box3d.d.ts",
+            "default": "./lib/esm-f64/box3d.js"
+        },
+        "./wasm/f64-threads": {
+            "types": "./lib/esm-f64-threads/box3d.d.ts",
+            "default": "./lib/esm-f64-threads/box3d.js"
+        },
+        "./wasm/node-f64": {
+            "types": "./lib/node-f64/box3d.d.ts",
+            "default": "./lib/node-f64/box3d.mjs"
+        },
+        "./wasm/node-f64-threads": {
+            "types": "./lib/node-f64-threads/box3d.d.ts",
+            "default": "./lib/node-f64-threads/box3d.mjs"
+        },
         "./lib/*": "./lib/*",
         "./umd/*": "./umd/*",
         "./package.json": "./package.json"

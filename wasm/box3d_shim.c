@@ -50,6 +50,54 @@ BX_EXPORT int bx_GetVersion( void )
 	return v.major * 10000 + v.minor * 100 + v.revision;
 }
 
+// World positions cross the boundary in doubles. Entry points take them as doubles, and those that give one back
+// write it to s_scratchF64 (or a double buffer beside their float records) as well as to the float scratch. A build with
+// BOX3D_DOUBLE_PRECISION keeps them exact far from the origin; the default build holds floats, so there the doubles
+// are its floats widened, and the floats are what they always were.
+#define BX_SCRATCH_F64_SIZE 16
+static double s_scratchF64[BX_SCRATCH_F64_SIZE];
+
+BX_EXPORT double* bx_ScratchF64( void )
+{
+	return s_scratchF64;
+}
+
+/// 1 when this module was built with BOX3D_DOUBLE_PRECISION, so world positions are held in doubles.
+BX_EXPORT int bx_IsDoublePrecision( void )
+{
+	return b3IsDoublePrecision() ? 1 : 0;
+}
+
+typedef struct bxDoubleBuffer
+{
+	double* data;
+	int count;
+	int capacity;
+} bxDoubleBuffer;
+
+static void bxDoubleBuffer_Reserve( bxDoubleBuffer* buf, int count )
+{
+	if ( count <= buf->capacity )
+	{
+		return;
+	}
+	int capacity = buf->capacity == 0 ? 256 : buf->capacity;
+	while ( capacity < count )
+	{
+		capacity *= 2;
+	}
+	buf->data = (double*)realloc( buf->data, (size_t)capacity * sizeof( double ) );
+	buf->capacity = capacity;
+}
+
+/// A world position from three doubles: exact in a double precision build, rounded to float in the default one, as a
+/// float argument always was.
+static b3Pos bxPos( double x, double y, double z )
+{
+	b3Pos p = { x, y, z };
+	return p;
+}
+
 typedef struct bxFloatBuffer
 {
 	float* data;
@@ -694,7 +742,7 @@ BX_EXPORT void bx_World_SetContactTuning( int w, float hertz, float dampingRatio
 	}
 }
 
-BX_EXPORT void bx_World_Explode( int w, float px, float py, float pz, float radius, float falloff, float impulsePerArea )
+BX_EXPORT void bx_World_Explode( int w, double px, double py, double pz, float radius, float falloff, float impulsePerArea )
 {
 	b3WorldId worldId = bxGetWorld( w );
 	if ( B3_IS_NULL( worldId ) )
@@ -702,7 +750,7 @@ BX_EXPORT void bx_World_Explode( int w, float px, float py, float pz, float radi
 		return;
 	}
 	b3ExplosionDef def = b3DefaultExplosionDef();
-	def.position = bxVec3( px, py, pz );
+	def.position = bxPos( px, py, pz );
 	def.radius = radius;
 	def.falloff = falloff;
 	def.impulsePerArea = impulsePerArea;
@@ -1001,7 +1049,7 @@ BX_EXPORT int bx_World_GetSensorEvents( int w )
 // ---------------------------------------------------------------------------------------------
 
 /// type: 0 static, 1 kinematic, 2 dynamic
-BX_EXPORT int bx_CreateBody( int w, int type, float px, float py, float pz, float qx, float qy, float qz, float qw, int isAwake )
+BX_EXPORT int bx_CreateBody( int w, int type, double px, double py, double pz, float qx, float qy, float qz, float qw, int isAwake )
 {
 	b3WorldId worldId = bxGetWorld( w );
 	if ( B3_IS_NULL( worldId ) )
@@ -1012,7 +1060,7 @@ BX_EXPORT int bx_CreateBody( int w, int type, float px, float py, float pz, floa
 	bxBody* body = s_bodies + slot;
 	b3BodyDef def = b3DefaultBodyDef();
 	def.type = (b3BodyType)type;
-	def.position = bxVec3( px, py, pz );
+	def.position = bxPos( px, py, pz );
 	def.rotation = bxQuat( qx, qy, qz, qw );
 	def.isAwake = isAwake != 0;
 	def.userData = (void*)(intptr_t)slot;
@@ -1108,37 +1156,47 @@ BX_EXPORT int bx_Body_GetType( int slot )
 	return (int)b3Body_GetType( body->id );
 }
 
-BX_EXPORT void bx_Body_SetTransform( int slot, float px, float py, float pz, float qx, float qy, float qz, float qw )
+BX_EXPORT void bx_Body_SetTransform( int slot, double px, double py, double pz, float qx, float qy, float qz, float qw )
 {
 	BX_BODY( slot );
-	b3Body_SetTransform( body->id, bxVec3( px, py, pz ), bxQuat( qx, qy, qz, qw ) );
+	b3Body_SetTransform( body->id, bxPos( px, py, pz ), bxQuat( qx, qy, qz, qw ) );
 	if ( body->helperCount > 0 )
 	{
-		b3Transform xf = bxTransform( px, py, pz, qx, qy, qz, qw );
+		b3WorldTransform xf;
+		xf.p = bxPos( px, py, pz );
+		xf.q = bxTransform( 0.0f, 0.0f, 0.0f, qx, qy, qz, qw ).q;
 		for ( int i = 0; i < body->helperCount; ++i )
 		{
 			if ( b3Body_IsValid( body->helpers[i].id ) )
 			{
-				b3Transform h = b3MulTransforms( xf, body->helpers[i].local );
+				b3WorldTransform h = b3MulWorldTransforms( xf, body->helpers[i].local );
 				b3Body_SetTransform( body->helpers[i].id, h.p, h.q );
 			}
 		}
 	}
 }
 
-/// scratch: [px, py, pz, qx, qy, qz, qw]
+/// scratch: [px, py, pz, qx, qy, qz, qw]; scratchF64: [px, py, pz], the position as the build holds it
 BX_EXPORT void bx_Body_GetTransform( int slot )
 {
 	BX_BODY( slot );
 	b3WorldTransform xf = b3Body_GetTransform( body->id );
-	bxWriteVec3( 0, xf.p );
+	s_scratch[0] = (float)xf.p.x;
+	s_scratch[1] = (float)xf.p.y;
+	s_scratch[2] = (float)xf.p.z;
 	bxWriteQuat( 3, xf.q );
+	s_scratchF64[0] = xf.p.x;
+	s_scratchF64[1] = xf.p.y;
+	s_scratchF64[2] = xf.p.z;
 }
 
-BX_EXPORT void bx_Body_SetTargetTransform( int slot, float px, float py, float pz, float qx, float qy, float qz, float qw, float dt )
+BX_EXPORT void bx_Body_SetTargetTransform( int slot, double px, double py, double pz, float qx, float qy, float qz, float qw,
+										   float dt )
 {
 	BX_BODY( slot );
-	b3WorldTransform xf = bxTransform( px, py, pz, qx, qy, qz, qw );
+	b3WorldTransform xf;
+	xf.p = bxPos( px, py, pz );
+	xf.q = bxTransform( 0.0f, 0.0f, 0.0f, qx, qy, qz, qw ).q;
 	b3Body_SetTargetTransform( body->id, xf, dt, true );
 }
 
@@ -1202,10 +1260,10 @@ BX_EXPORT float bx_Body_GetGravityScale( int slot )
 	return b3Body_GetGravityScale( body->id );
 }
 
-BX_EXPORT void bx_Body_ApplyForce( int slot, float fx, float fy, float fz, float px, float py, float pz )
+BX_EXPORT void bx_Body_ApplyForce( int slot, float fx, float fy, float fz, double px, double py, double pz )
 {
 	BX_BODY( slot );
-	b3Body_ApplyForce( body->id, bxVec3( fx, fy, fz ), bxVec3( px, py, pz ), true );
+	b3Body_ApplyForce( body->id, bxVec3( fx, fy, fz ), bxPos( px, py, pz ), true );
 }
 
 BX_EXPORT void bx_Body_ApplyForceToCenter( int slot, float fx, float fy, float fz )
@@ -1220,10 +1278,10 @@ BX_EXPORT void bx_Body_ApplyTorque( int slot, float x, float y, float z )
 	b3Body_ApplyTorque( body->id, bxVec3( x, y, z ), true );
 }
 
-BX_EXPORT void bx_Body_ApplyLinearImpulse( int slot, float ix, float iy, float iz, float px, float py, float pz )
+BX_EXPORT void bx_Body_ApplyLinearImpulse( int slot, float ix, float iy, float iz, double px, double py, double pz )
 {
 	BX_BODY( slot );
-	b3Body_ApplyLinearImpulse( body->id, bxVec3( ix, iy, iz ), bxVec3( px, py, pz ), true );
+	b3Body_ApplyLinearImpulse( body->id, bxVec3( ix, iy, iz ), bxPos( px, py, pz ), true );
 }
 
 BX_EXPORT void bx_Body_ApplyLinearImpulseToCenter( int slot, float ix, float iy, float iz )
@@ -1317,6 +1375,15 @@ BX_EXPORT float* bx_BodyContactsPtr( void )
 	return s_bodyContacts.data;
 }
 
+// Each record's points as [x, y, z] doubles, room for four to a record, beside the float records
+#define BX_BODY_CONTACT_POINTS_STRIDE ( 3 * B3_MAX_MANIFOLD_POINTS )
+static bxDoubleBuffer s_bodyContactPoints;
+
+BX_EXPORT double* bx_BodyContactPointsF64Ptr( void )
+{
+	return s_bodyContactPoints.data;
+}
+
 /// The index of shapeId among the body's shapes, or -1.
 static int bxShapeIndex( const bxBody* body, b3ShapeId shapeId )
 {
@@ -1389,8 +1456,10 @@ BX_EXPORT int bx_Body_GetContacts( int slot )
 	}
 	bxFloatBuffer_Reserve( &s_bodyContacts, manifoldTotal * BX_BODY_CONTACT_STRIDE );
 
+	bxDoubleBuffer_Reserve( &s_bodyContactPoints, manifoldTotal * BX_BODY_CONTACT_POINTS_STRIDE );
 	b3Pos center = b3Body_GetWorldCenter( body->id );
 	float* out = s_bodyContacts.data;
+	double* outPoints = s_bodyContactPoints.data;
 	int count = 0;
 	for ( int i = 0; i < contactCount; ++i )
 	{
@@ -1410,6 +1479,7 @@ BX_EXPORT int bx_Body_GetContacts( int slot )
 		{
 			const b3Manifold* manifold = data->manifolds + m;
 			memset( out, 0, BX_BODY_CONTACT_STRIDE * sizeof( float ) );
+			memset( outPoints, 0, BX_BODY_CONTACT_POINTS_STRIDE * sizeof( double ) );
 			out[0] = (float)selfIndex;
 			out[1] = (float)( other != NULL ? otherSlot : 0 );
 			out[2] = (float)otherIndex;
@@ -1430,6 +1500,9 @@ BX_EXPORT int bx_Body_GetContacts( int slot )
 				po[0] = (float)point.x;
 				po[1] = (float)point.y;
 				po[2] = (float)point.z;
+				outPoints[3 * p + 0] = point.x;
+				outPoints[3 * p + 1] = point.y;
+				outPoints[3 * p + 2] = point.z;
 				po[3] = mp->separation;
 				po[4] = mp->normalImpulse;
 				po[5] = mp->totalNormalImpulse;
@@ -1438,6 +1511,7 @@ BX_EXPORT int bx_Body_GetContacts( int slot )
 				po[8] = (float)bxContactMaterial( other, otherIndex, mp->triangleIndex );
 			}
 			out += BX_BODY_CONTACT_STRIDE;
+			outPoints += BX_BODY_CONTACT_POINTS_STRIDE;
 			count += 1;
 		}
 	}
@@ -2483,7 +2557,7 @@ static void bxInstantiate( bxBody* body, int descSlot, b3Transform xf, b3Vec3 sc
 					body->helperCapacity = capacity;
 				}
 				b3WorldTransform bodyXf = b3Body_GetTransform( body->id );
-				b3Transform world = b3MulTransforms( bodyXf, local );
+				b3WorldTransform world = b3MulWorldTransforms( bodyXf, local );
 				b3BodyDef helperDef = b3DefaultBodyDef();
 				helperDef.type = b3_staticBody;
 				helperDef.position = world.p;
@@ -3482,6 +3556,22 @@ BX_EXPORT float* bx_RayHitsPtr( void )
 	return s_rayHits.data;
 }
 
+// Each hit's point as [x, y, z] doubles, beside its float record
+static bxDoubleBuffer s_rayHitPoints;
+
+BX_EXPORT double* bx_RayHitPointsF64Ptr( void )
+{
+	return s_rayHitPoints.data;
+}
+
+static void bxWriteHitPoint( int index, b3Pos point )
+{
+	bxDoubleBuffer_Reserve( &s_rayHitPoints, ( index + 1 ) * 3 );
+	s_rayHitPoints.data[3 * index + 0] = point.x;
+	s_rayHitPoints.data[3 * index + 1] = point.y;
+	s_rayHitPoints.data[3 * index + 2] = point.z;
+}
+
 static float bxRayCallback( b3ShapeId shapeId, b3Pos point, b3Vec3 normal, float fraction, uint64_t userMaterialId, int triangleIndex,
 							int childIndex, void* context )
 {
@@ -3531,13 +3621,14 @@ static float bxRayCallback( b3ShapeId shapeId, b3Pos point, b3Vec3 normal, float
 	out[8] = (float)bxDescSlotFromShape( shapeId );
 	out[9] = (float)triangleIndex;
 	out[10] = (float)shapeIndex;
+	bxWriteHitPoint( index, point );
 	ctx->count = ctx->closestOnly ? 1 : ctx->count + 1;
 	return ctx->closestOnly ? clip : 1.0f;
 }
 
 /// Casts a ray from origin along translation. Returns the number of hits written to bx_RayHitsPtr().
 /// Each hit: [px, py, pz, nx, ny, nz, fraction, bodySlot, shapeDesc, triangleIndex, shapeIndex]
-BX_EXPORT int bx_World_CastRay( int w, float ox, float oy, float oz, float dx, float dy, float dz, unsigned int categoryBits,
+BX_EXPORT int bx_World_CastRay( int w, double ox, double oy, double oz, float dx, float dy, float dz, unsigned int categoryBits,
 								unsigned int maskBits, int ignoreBody, int hitSensors, int closestOnly )
 {
 	b3WorldId worldId = bxGetWorld( w );
@@ -3549,15 +3640,8 @@ BX_EXPORT int bx_World_CastRay( int w, float ox, float oy, float oz, float dx, f
 	b3QueryFilter filter = b3DefaultQueryFilter();
 	filter.categoryBits = (uint64_t)categoryBits;
 	filter.maskBits = (uint64_t)maskBits;
-	b3World_CastRay( worldId, bxVec3( ox, oy, oz ), bxVec3( dx, dy, dz ), filter, bxRayCallback, &ctx );
+	b3World_CastRay( worldId, bxPos( ox, oy, oz ), bxVec3( dx, dy, dz ), filter, bxRayCallback, &ctx );
 	return ctx.count;
-}
-
-/// A world position from three doubles: exact in a double precision build, rounded to float in the default one.
-static b3Pos bxPos( double x, double y, double z )
-{
-	b3Pos p = { x, y, z };
-	return p;
 }
 
 typedef struct bxShapeCastContext
@@ -3645,6 +3729,7 @@ static float bxShapeCastCallback( b3ShapeId shapeId, b3Pos point, b3Vec3 normal,
 	out[8] = (float)bxDescSlotFromShape( shapeId );
 	out[9] = (float)triangleIndex;
 	out[10] = (float)shapeIndex;
+	bxWriteHitPoint( index, point );
 	ctx->count = ctx->closestOnly ? 1 : ctx->count + 1;
 	return 1.0f;
 }

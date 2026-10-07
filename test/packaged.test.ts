@@ -37,6 +37,12 @@ const Loaders = [
     { name: "lib/node/box3d.mjs", loader: "lib/node/box3d.mjs", wasm: "lib/node/box3d.wasm" },
 ];
 
+/** The double precision build's loaders: a build of its own, with the same entry points. */
+const F64Loaders = [
+    { name: "lib/esm-f64/box3d.js", loader: "lib/esm-f64/box3d.js", wasm: "lib/esm-f64/box3d.wasm" },
+    { name: "lib/node-f64/box3d.mjs", loader: "lib/node-f64/box3d.mjs", wasm: "lib/node-f64/box3d.wasm" },
+];
+
 /**
  * Loads one loader with one wasm file, whatever environment the loader was built for. The web loaders fetch their wasm,
  * which node cannot do for a file URL, so the binary is handed over through instantiateWasm instead. That is also what
@@ -96,7 +102,7 @@ function DropAndCast(b3: any) {
 }
 
 describe("packaged build", () => {
-    it.each(Loaders)("$name and the wasm beside it run a scene end to end", async ({ loader, wasm }) => {
+    it.each([...Loaders, ...F64Loaders])("$name and the wasm beside it run a scene end to end", async ({ loader, wasm }) => {
         const b3 = await LoadPair(loader, wasm);
         const world = DropAndCast(b3);
         // the velocity reached the engine rather than being dropped on the floor of a no-op
@@ -121,6 +127,14 @@ describe("packaged build", () => {
         expect(names[0].length).toBeGreaterThan(100);
         expect(names[1]).toEqual(names[0]);
         expect(names[2]).toEqual(names[0]);
+
+        // the double precision build is one build behind both its loaders, with the same entry points as the float one
+        const f64Binaries = F64Loaders.map(({ wasm }) => readFileSync(path.join(Root, wasm)).toString("base64"));
+        expect(f64Binaries[1]).toBe(f64Binaries[0]);
+        expect(f64Binaries[0]).not.toBe(binaries[0]);
+        for (const { loader } of F64Loaders) {
+            expect([...new Set(Read(loader).match(/_bx_[A-Za-z0-9_]+/g) ?? [])].sort()).toEqual(names[0]);
+        }
     });
 
     it("points every entry in the package export map at a file that exists", () => {
@@ -142,10 +156,14 @@ describe("packaged build", () => {
         // the two builds and their typings, which is what an import of babylon-box3d/wasm/threads resolves through
         expect(paths).toContain("./lib/esm-threads/box3d.js");
         expect(paths).toContain("./lib/node-threads/box3d.mjs");
+        // and the double precision builds, behind babylon-box3d/wasm/f64 and its siblings
+        for (const flavour of ["esm-f64/box3d.js", "esm-f64-threads/box3d.js", "node-f64/box3d.mjs", "node-f64-threads/box3d.mjs"]) {
+            expect(paths).toContain(`./lib/${flavour}`);
+        }
     });
 
     it("binds its exports by name, so a loader and a wasm from two builds cannot bind the wrong functions", () => {
-        for (const { loader } of Loaders) {
+        for (const { loader } of [...Loaders, ...F64Loaders]) {
             const source = Read(loader);
             // wasmExports["bx_CreateWorld"], not wasmExports["G"]: without this a mismatch is silent instead of loud
             expect(source, loader).toContain('wasmExports["bx_CreateWorld"]');
@@ -165,6 +183,23 @@ describe("packaged build", () => {
         const declared = source.split("const RequiredNativeExports = [")[1].split("];")[0];
         const listed = [...new Set(declared.match(/_bx_[A-Za-z0-9_]+/g) ?? [])].sort();
         expect(listed).toEqual(usedInSource);
+    });
+
+    it("loads the double precision build when LoadBox3D is asked for it", async () => {
+        const { LoadBox3D } = (await import("../dist/index.js")) as any;
+        const load = async (doublePrecision: boolean, wasm: string) => {
+            const compiled = new WebAssembly.Module(readFileSync(path.join(Root, wasm)));
+            return LoadBox3D({
+                doublePrecision,
+                instantiateWasm: (imports: WebAssembly.Imports, success: (instance: WebAssembly.Instance) => void) => {
+                    const instance = new WebAssembly.Instance(compiled, imports);
+                    success(instance);
+                    return instance.exports;
+                },
+            });
+        };
+        expect((await load(true, "lib/esm-f64/box3d.wasm"))._bx_IsDoublePrecision()).toBe(1);
+        expect((await load(false, "lib/esm/box3d.wasm"))._bx_IsDoublePrecision()).toBe(0);
     });
 
     it("refuses a loader that is missing an entry point instead of running half a world", async () => {

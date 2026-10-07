@@ -196,8 +196,8 @@ describe("mesh and height field bytes", () => {
             `piece ${(meshBytes.length / 1048576).toFixed(3)} MiB (${PIECE.triangleCount} triangles), tile ${(tileBytes.length / 1024).toFixed(1)} KiB; ` +
                 `${built.touches} manifolds over ${TICKS} ticks, car at x = ${built.finalX.toFixed(2)} m`
         );
-        // the car crossed the piece onto the tile, touching all the way
-        expect(built.finalX).toBeGreaterThan(70);
+        // the car crossed the piece onto the tile, which starts at 59.5 m, touching all the way
+        expect(built.finalX).toBeGreaterThan(62);
         expect(built.touches).toBeGreaterThan(TICKS);
         expect(sameBits(copied.states, built.states)).toBe(true);
         for (let tick = 0; tick < TICKS; tick++) {

@@ -4,6 +4,11 @@
  * The module exposes a flat, handle based C API (see src/box3d_shim.c). Bodies, shape descriptions and joints
  * are integer slots. Vectors and quaternions are passed as individual floats. Functions that return more than one
  * value write into the scratch buffer returned by `_bx_Scratch()` (64 floats), read it through `HEAPF32`.
+ *
+ * World positions cross in doubles: the entry points that take one take doubles, and those that give one back also
+ * write it as doubles, to `_bx_ScratchF64()` or to a double buffer beside their float records (read through
+ * `HEAPF64`). The `-f64` builds (BOX3D_DOUBLE_PRECISION) hold positions in doubles, so a body far from the origin moves
+ * as it does near it; the default builds hold floats, and their doubles are those floats widened.
  */
 
 export interface Box3DModuleOptions {
@@ -19,6 +24,7 @@ export interface Box3DModuleOptions {
 /** Emscripten heap views. Do not cache them: they are replaced when the memory grows. */
 export interface Box3DHeap {
     HEAPF32: Float32Array;
+    HEAPF64: Float64Array;
     HEAP32: Int32Array;
     HEAPU32: Uint32Array;
     HEAPU8: Uint8Array;
@@ -29,6 +35,10 @@ export interface Box3DExports {
     _malloc(bytes: number): number;
     _free(ptr: number): void;
     _bx_Scratch(): number;
+    /** 16 doubles: world positions given back, see `_bx_Body_GetTransform`. */
+    _bx_ScratchF64(): number;
+    /** 1 in an `-f64` build, which holds world positions in doubles. */
+    _bx_IsDoublePrecision(): number;
     _bx_Alloc(bytes: number): number;
     _bx_Free(ptr: number): void;
     /** major * 10000 + minor * 100 + revision */
@@ -71,7 +81,7 @@ export interface Box3DExports {
     _bx_Body_SetType(body: number, type: number): void;
     _bx_Body_GetType(body: number): number;
     _bx_Body_SetTransform(body: number, px: number, py: number, pz: number, qx: number, qy: number, qz: number, qw: number): void;
-    /** scratch: [px, py, pz, qx, qy, qz, qw] */
+    /** scratch: [px, py, pz, qx, qy, qz, qw] as floats; scratchF64: [px, py, pz] as the build holds them */
     _bx_Body_GetTransform(body: number): void;
     _bx_Body_SetTargetTransform(body: number, px: number, py: number, pz: number, qx: number, qy: number, qz: number, qw: number, dt: number): void;
     _bx_Body_SetLinearVelocity(body: number, x: number, y: number, z: number): void;
@@ -115,6 +125,8 @@ export interface Box3DExports {
      */
     _bx_Body_GetContacts(body: number): number;
     _bx_BodyContactsPtr(): number;
+    /** The points of the records `_bx_Body_GetContacts` wrote, as doubles: 12 a record, [x, y, z] for each of its 4. */
+    _bx_BodyContactPointsF64Ptr(): number;
     /** Per-shape handles: each changes one shape, resets only its contacts, and keeps every shape's index. */
     /** Replaces shape `index` with the hull of `pointCount` points (xyz floats at `points`) in the body's frame; 1 if done. */
     _bx_Body_SetShapeHull(body: number, index: number, points: number, pointCount: number): number;
@@ -271,6 +283,8 @@ export interface Box3DExports {
 
     // queries
     _bx_RayHitsPtr(): number;
+    /** The hit points of the last ray or shape cast, as doubles: [x, y, z] a hit, beside `_bx_RayHitsPtr`'s records. */
+    _bx_RayHitPointsF64Ptr(): number;
     /** Returns the hit count; hits are 11 floats each: [px, py, pz, nx, ny, nz, fraction, bodySlot, shapeDesc, triangleIndex, shapeIndex] */
     _bx_World_CastRay(world: number, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, categoryBits: number, maskBits: number, ignoreBody: number, hitSensors: number, closestOnly: number): number;
     /**

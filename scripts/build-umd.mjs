@@ -36,6 +36,13 @@ const globalsPlugin = {
                 'export default function () { throw new Error("babylon.box3d.js is the script tag build and has no threaded module. Install the package and import it, or use LoadBox3D({ threads: \\"auto\\" })."); }',
             loader: "js",
         }));
+        // Nor a double precision one: LoadBox3D({ doublePrecision: true }) says so instead of failing on a missing file.
+        build.onResolve({ filter: /^babylon-box3d\/wasm\/f64(-threads)?$/ }, (args) => ({ path: args.path, namespace: "box3d-f64-stub" }));
+        build.onLoad({ filter: /.*/, namespace: "box3d-f64-stub" }, () => ({
+            contents:
+                'export default function () { throw new Error("babylon.box3d.js is the script tag build and has no double precision module. Install the package and import it."); }',
+            loader: "js",
+        }));
     },
 };
 

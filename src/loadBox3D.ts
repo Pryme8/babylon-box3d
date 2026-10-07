@@ -7,7 +7,8 @@
 //   Cross-Origin-Opener-Policy: same-origin
 //   Cross-Origin-Embedder-Policy: require-corp
 //
-// The threaded module is imported dynamically, so a page that never asks for threads never downloads it.
+// The threaded module is imported dynamically, so a page that never asks for threads never downloads it. Each also
+// comes in double precision (BOX3D_DOUBLE_PRECISION), for worlds too large for float positions.
 
 import type { Box3DModule, Box3DModuleOptions } from "babylon-box3d/wasm";
 
@@ -19,6 +20,13 @@ export interface ILoadBox3DOptions extends Box3DModuleOptions {
      * to the single threaded one everywhere else.
      */
     threads?: boolean | "auto";
+    /**
+     * Load the double precision build, whose bodies keep their positions in doubles, so that a world tens of
+     * kilometres across steps far from the origin as it does near it. Positions cross into the module in doubles in
+     * either build; `_bx_ScratchF64()` holds a body's full position after `_bx_Body_GetTransform`. false (the default)
+     * is the float build.
+     */
+    doublePrecision?: boolean;
 }
 
 /**
@@ -45,7 +53,7 @@ export function CanUseBox3DThreads(): boolean {
  * @returns the resolved module
  */
 export async function LoadBox3D(options: ILoadBox3DOptions = {}): Promise<Box3DModule> {
-    const { threads = false, ...moduleOptions } = options;
+    const { threads = false, doublePrecision = false, ...moduleOptions } = options;
     const wantsThreads = threads === "auto" ? CanUseBox3DThreads() : threads;
     if (wantsThreads) {
         if (threads === true && !CanUseBox3DThreads()) {
@@ -55,9 +63,9 @@ export async function LoadBox3D(options: ILoadBox3DOptions = {}): Promise<Box3DM
                     'LoadBox3D({ threads: "auto" }) to fall back to the single threaded build.'
             );
         }
-        const threaded = await import("babylon-box3d/wasm/threads");
+        const threaded = doublePrecision ? await import("babylon-box3d/wasm/f64-threads") : await import("babylon-box3d/wasm/threads");
         return threaded.default(moduleOptions);
     }
-    const plain = await import("babylon-box3d/wasm");
+    const plain = doublePrecision ? await import("babylon-box3d/wasm/f64") : await import("babylon-box3d/wasm");
     return plain.default(moduleOptions);
 }

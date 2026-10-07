@@ -153,6 +153,46 @@ reach that. The shim hands box3d its own task system instead (`wasm/box3d_shim.c
 - Contact events cross into JavaScript one record per contact per step. A body nothing listens to should not be
   asking for them: `body.setCollisionCallbackEnabled(false)`, which is the default.
 
+## Double precision
+
+Box3D keeps a body's position in floats, which are 2 mm apart 30 km from the origin, so a large world steps
+differently far out than near the origin. Box3D's large world mode (`BOX3D_DOUBLE_PRECISION`) keeps positions and
+transforms in doubles, while velocities, shapes and contacts stay floats, and the package ships it as builds of their
+own, single threaded and threaded:
+
+```ts
+const box3d = await LoadBox3D({ threads: "auto", doublePrecision: true });
+// or the modules themselves: babylon-box3d/wasm/f64 and babylon-box3d/wasm/f64-threads, and in node
+// babylon-box3d/wasm/node-f64 and babylon-box3d/wasm/node-f64-threads
+```
+
+Both builds have the same entry points, and both take positions in doubles: a body's position and target transform,
+the point a force or impulse is applied at, a ray's or shape cast's origin and an explosion's centre. The float build
+rounds each to the float it keeps, as the call did when it took floats, so its results have not changed. Positions
+come back in floats where they always did, and in doubles beside them:
+
+| floats | doubles |
+| --- | --- |
+| `bx_Body_GetTransform`: the scratch buffer's first three | `bx_ScratchF64()`: the position, as the build holds it |
+| `bx_RayHitsPtr`: each hit's point | `bx_RayHitPointsF64Ptr()`: three a hit, for rays and shape casts |
+| `bx_BodyContactsPtr`: each contact point's position | `bx_BodyContactPointsF64Ptr()`: twelve a manifold, three a point |
+
+`bx_IsDoublePrecision()` says which build is loaded. Move and contact events stay floats.
+
+What it buys (`test/wasm.largeWorld.test.ts`): a car settling and coasting along a road 30 km from the origin stays
+within 3e-11 m of its run at the origin, where the float build's is 5.5 cm off. What it does not: Box3D's broad phase
+keeps its bounds in float world space, rounded outward, so far out a new pair can be made a step earlier or later than
+at the origin, and from where the car first meets another shape the two runs part (by 0.18 mm a third of a second
+later, in the test). A run at the same coordinates still repeats bit for bit. A mesh or height field block
+(`bx_ShapeDesc_GetGeometryBytes`) is the same bytes in either build, so one built by the float build loads in the
+double precision build, to the same contacts.
+
+What it costs: on R3's rate probe cases (a car of 20 to 160 hulls riding, sliding and pushed into a wall over a height
+field and a road mesh, at 480 and 240 Hz), with the two builds taking turns of 1,000 steps in one process, a step took
+6.3% longer in the double precision build summed over the cases with Box3D's defaults, and 6.6% with the car's hulls
+filtered against each other and the car unswept. Case by case the difference ran from 17% less to 17% more, on a
+machine half busy with other work, and the median case took 6.6% and 8.5% longer.
+
 ## What is covered
 
 | Babylon v2 | Box3D |
@@ -265,6 +305,7 @@ is not supported yet, it depends on Havok internals.
 | `bx_Body_GetShapeGeometry`, `bx_GeometryPtr` | a shape's sphere, capsule or hull points, in the body's frame |
 | `bx_Body_SetFeatureKey`, `bx_Body_GetFeatureKey`, `bx_Body_GetShapeFeatureKey` | canonical pairs, see [Patches to Box3D](#patches-to-box3d): a body's key (1 to 2^44 - 1, as a double) gives each of its shapes the key `(key << 20) \| index`, by which new contacts are made, continuous collision sweeps, and a closest ray or shape cast breaks a tie (then by body slot and shape index) |
 | `bx_ShapeDesc_GetGeometryBytes`, `bx_ShapeDesc_GetGeometryByteCount`, `bx_ShapeDesc_CreateMeshFromBytes`, `bx_ShapeDesc_CreateHeightFieldFromBytes` | a mesh's or height field's data as bytes, and a description made from a copy of them. Box3D keeps either as one block addressed by offsets, with no pointer in it, so an instance with no world (a worker's) can build the geometry and another instance of the same build copies the block in as it is: nothing in it needs fixing up. The import checks the version, the byte count and that every array lies inside the block, and costs a copy |
+| `bx_IsDoublePrecision`, `bx_ScratchF64`, `bx_RayHitPointsF64Ptr`, `bx_BodyContactPointsF64Ptr` | positions in doubles, see [Double precision](#double-precision) |
 | `bx_ShapeDesc_SetInvokeContactCreation`, `bx_ShapeDesc_GetInvokeContactCreation`, `bx_World_GetStackUsed` | Box3D's `invokeContactCreation` per description, on by default. Off, a static shape never enters the broad phase's move buffer: the first step reserves no pair slots for it (486 bytes a static, which the step stack then keeps for good) and it is paired when a moving shape finds it, so a static made late pairs on the same step as one made at the start. Off on a container, it is off for every shape made from its children. `bx_World_GetStackUsed` says the most the step stack has held |
 
 Box3D creates shapes on bodies while Babylon creates shapes standalone, so a `PhysicsShape` is a description that
@@ -282,10 +323,11 @@ and mesh winding is flipped, exactly like the Havok plugin.
 | `src/index.ts` | package entry: `Box3DPlugin`, `Box3DWheelJoint`, `Box3D` (wasm factory), `LoadBox3D` |
 | `src/loadBox3D.ts` | picks the single threaded or threaded wasm build for the page |
 | `wasm/box3d_shim.c` | C shim: flat, handle based API over box3d (`bx_*` functions) |
-| `wasm/build.mjs` | emcc build for `lib/esm`, `lib/umd` (global `Box3D`), `lib/node` and the threaded pair |
+| `wasm/build.mjs` | emcc build for `lib/esm`, `lib/umd` (global `Box3D`), `lib/node`, the threaded pair and the double precision builds |
 | `lib/` | committed wasm builds and typings, `UPSTREAM_COMMIT` is the box3d commit |
 | `wasm/patches/` | changes to Box3D itself, applied in name order to a copy of the box3d checkout at build time, see [Patches to Box3D](#patches-to-box3d) |
 | `lib/esm-threads`, `lib/node-threads` | the same module built with pthreads, see [Threads](#threads) |
+| `lib/esm-f64`, `lib/node-f64` and their `-threads` twins | the same modules built with `BOX3D_DOUBLE_PRECISION`, see [Double precision](#double-precision) |
 | `umd/` | plugin bundle for script tags (global `BABYLONBOX3D`), built by `npm run build:umd` |
 | `demo/` | vite showcase: `npm run demo`, then `http://localhost:5178/?demo=pyramid` |
 | `docs/` | the community extension page for the Babylon.js documentation |
@@ -358,7 +400,10 @@ with Havok and compare, which is what pins the Havok compatible behaviour down.
 `npm run build:wasm` produces both builds: the single threaded one in `lib/esm`, `lib/umd` and `lib/node`, and the
 threaded one in `lib/esm-threads` and `lib/node-threads`. Add `--no-threads` to skip the second while iterating on the
 shim. Both are wasm SIMD128; the threaded one adds `-pthread` and a pool of 8 workers, which is the cap the shim
-clamps `workerCount` to. `npm run bench -- --workers 4` runs the benchmark on it.
+clamps `workerCount` to. `npm run bench -- --workers 4` runs the benchmark on it. Each is built again with
+`BOX3D_DOUBLE_PRECISION` from objects of its own, into `lib/esm-f64`, `lib/node-f64` and their `-threads` twins:
+`--no-f64` skips them and `--f64-only` builds only them. `BOX3D_FLAVOUR=f64 npx vitest run` runs the tests on the
+double precision builds (`vitest.config.ts` sends every import of a node loader to its twin).
 
 ## Patches to Box3D
 

@@ -421,8 +421,9 @@ describe("crushable contacts: rigid contacts are untouched", () => {
     // as they were. The hash is Box3D's, so a new upstream commit or another patch that changes rigid contacts
     // records it again, and says why in its commit. wasm/patches/0005 recorded it again: it makes each step's new
     // contacts in shape order, where they came in the order the broad phase's trees gave them, so the pyramid's
-    // contacts get other ids and the solver meets them in another order.
+    // contacts get other ids and the solver meets them in another order. The double precision build has its own.
     const PYRAMID_HASH = 0xe0a92cff;
+    const PYRAMID_HASH_F64 = 0x30bf8a88;
 
     it("leaves the 210-box pyramid bit for bit where it was", () => {
         const world = createWorld(-9.81);
@@ -455,7 +456,7 @@ describe("crushable contacts: rigid contacts are untouched", () => {
                 hash = Math.imul(hash ^ bits[0], 16777619) >>> 0;
             }
         }
-        expect(hash).toBe(PYRAMID_HASH);
+        expect(hash).toBe(b3._bx_IsDoublePrecision() ? PYRAMID_HASH_F64 : PYRAMID_HASH);
     });
 });
 

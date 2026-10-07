@@ -2,7 +2,9 @@
 //
 //   node wasm/build.mjs               release build, single threaded and threaded
 //   node wasm/build.mjs --debug       assertions and symbols, slower
-//   node wasm/build.mjs --no-threads  skip the threaded build (faster to iterate on)
+//   node wasm/build.mjs --no-threads  skip the threaded builds (faster to iterate on)
+//   node wasm/build.mjs --no-f64      skip the double precision builds
+//   node wasm/build.mjs --f64-only    only the double precision builds
 //
 // Requirements:
 //   * Emscripten SDK: set EMSDK, or keep a checkout at ../emsdk next to this repository.
@@ -19,6 +21,11 @@
 //                                       hand out on a cross origin isolated page, so they are a second build rather
 //                                       than the default. There is no threaded UMD build: the script tag case is the
 //                                       Playground and plain pages, and those are not isolated.
+//   lib/esm-f64, lib/node-f64 and their -threads variants
+//                                       the same modules built with BOX3D_DOUBLE_PRECISION: Box3D keeps world
+//                                       positions in doubles (velocities, shapes and contacts stay float), so a body
+//                                       far from the origin moves as it does near it. The shim takes and gives
+//                                       positions in doubles in every build; only these keep them.
 
 import { spawn, spawnSync } from "child_process";
 import { createHash } from "crypto";
@@ -40,6 +47,8 @@ import { fileURLToPath } from "url";
 const RepoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const Debug = process.argv.includes("--debug");
 const SkipThreads = process.argv.includes("--no-threads");
+const SkipF64 = process.argv.includes("--no-f64");
+const OnlyF64 = process.argv.includes("--f64-only");
 const IsWindows = process.platform === "win32";
 
 // Emscripten spawns this many workers when the threaded module loads, and box3d gets one more worker than that
@@ -229,7 +238,7 @@ async function Link(objects, { output, environment, es6, threads }) {
         "-sSTACK_SIZE=1048576",
         "-sFILESYSTEM=0",
         "-sEXPORTED_FUNCTIONS=_malloc,_free",
-        "-sEXPORTED_RUNTIME_METHODS=HEAPF32,HEAP32,HEAPU32,HEAPU8",
+        "-sEXPORTED_RUNTIME_METHODS=HEAPF32,HEAPF64,HEAP32,HEAPU32,HEAPU8",
         // Keep the wasm export names. At -O3 emscripten renames them to a, b, c... and the loader binds each bx_ entry
         // point to a letter, so a box3d.js and a box3d.wasm from two different builds bind every function to its
         // neighbour and fail silently: bodies get created and never reach the world, rays hit nothing, and nothing
@@ -275,19 +284,39 @@ const BuildDir = path.join(RepoRoot, "build", Debug ? "debug" : "release");
 console.log(`Box3D: ${Box3dDir}${Patches.length ? ` + ${Patches.length} patches` : ""}`);
 PrepareSources();
 console.log(`Emscripten: ${EmscriptenDir}`);
-const objects = await CompileAll(BuildDir, []);
-await Link(objects, { output: path.join(RepoRoot, "lib", "esm", "box3d.js"), environment: "web,worker", es6: true });
-await Link(objects, { output: path.join(RepoRoot, "lib", "umd", "box3d.umd.js"), environment: "web,worker", es6: false });
-await Link(objects, { output: path.join(RepoRoot, "lib", "node", "box3d.mjs"), environment: "node", es6: true });
-CopyTypes(["node"]);
+const threadFlags = ["-pthread", `-DBX_WORKER_POOL=${WorkerPoolSize}`];
+const threaded = { threads: true, es6: true };
 
-if (!SkipThreads) {
-    const threadFlags = ["-pthread", `-DBX_WORKER_POOL=${WorkerPoolSize}`];
-    const threadObjects = await CompileAll(`${BuildDir}-threads`, threadFlags);
-    const threaded = { threads: true, es6: true };
-    await Link(threadObjects, { output: path.join(RepoRoot, "lib", "esm-threads", "box3d.js"), environment: "web,worker", ...threaded });
-    await Link(threadObjects, { output: path.join(RepoRoot, "lib", "node-threads", "box3d.mjs"), environment: "node", ...threaded });
-    CopyTypes(["esm-threads", "node-threads"]);
+if (!OnlyF64) {
+    const objects = await CompileAll(BuildDir, []);
+    await Link(objects, { output: path.join(RepoRoot, "lib", "esm", "box3d.js"), environment: "web,worker", es6: true });
+    await Link(objects, { output: path.join(RepoRoot, "lib", "umd", "box3d.umd.js"), environment: "web,worker", es6: false });
+    await Link(objects, { output: path.join(RepoRoot, "lib", "node", "box3d.mjs"), environment: "node", es6: true });
+    CopyTypes(["node"]);
+
+    if (!SkipThreads) {
+        const threadObjects = await CompileAll(`${BuildDir}-threads`, threadFlags);
+        await Link(threadObjects, { output: path.join(RepoRoot, "lib", "esm-threads", "box3d.js"), environment: "web,worker", ...threaded });
+        await Link(threadObjects, { output: path.join(RepoRoot, "lib", "node-threads", "box3d.mjs"), environment: "node", ...threaded });
+        CopyTypes(["esm-threads", "node-threads"]);
+    }
+}
+
+// Large world mode: the same sources with world positions in doubles. Its own objects, since the define changes Box3D's
+// structs, and no UMD build, as for threads.
+if (!SkipF64) {
+    const f64Flags = ["-DBOX3D_DOUBLE_PRECISION"];
+    const f64Objects = await CompileAll(`${BuildDir}-f64`, f64Flags);
+    await Link(f64Objects, { output: path.join(RepoRoot, "lib", "esm-f64", "box3d.js"), environment: "web,worker", es6: true });
+    await Link(f64Objects, { output: path.join(RepoRoot, "lib", "node-f64", "box3d.mjs"), environment: "node", es6: true });
+    CopyTypes(["esm-f64", "node-f64"]);
+
+    if (!SkipThreads) {
+        const f64ThreadObjects = await CompileAll(`${BuildDir}-f64-threads`, [...threadFlags, ...f64Flags]);
+        await Link(f64ThreadObjects, { output: path.join(RepoRoot, "lib", "esm-f64-threads", "box3d.js"), environment: "web,worker", ...threaded });
+        await Link(f64ThreadObjects, { output: path.join(RepoRoot, "lib", "node-f64-threads", "box3d.mjs"), environment: "node", ...threaded });
+        CopyTypes(["esm-f64-threads", "node-f64-threads"]);
+    }
 }
 
 RecordUpstream();
