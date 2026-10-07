@@ -154,6 +154,10 @@ typedef struct bxShapeDesc
 	int groupIndex;
 	float rollingResistance;
 	int isSensor;
+	// Box3D's b3ShapeDef::invokeContactCreation, on by default: a static shape made with it starts in the broad phase's
+	// move buffer and looks for its own pairs on the next step. Off, it waits to be found by a moving shape. A container
+	// that has it off turns it off for every shape made from its children.
+	int invokeContactCreation;
 	bxChild* children;
 	int childCount;
 	int childCapacity;
@@ -712,6 +716,13 @@ BX_EXPORT int bx_World_GetJointEventCount( int w )
 {
 	b3WorldId worldId = bxGetWorld( w );
 	return B3_IS_NON_NULL( worldId ) ? b3World_GetJointEvents( worldId ).count : 0;
+}
+
+/// The most the world's step stack has held at once, in bytes. Box3D grows the stack to 1.5 times this and keeps it.
+BX_EXPORT int bx_World_GetStackUsed( int w )
+{
+	b3WorldId worldId = bxGetWorld( w );
+	return B3_IS_NON_NULL( worldId ) ? b3World_GetCounters( worldId ).stackUsed : 0;
 }
 
 /// scratch: [bodyCount, shapeCount, contactCount, jointCount, islandCount, stepMs, collideMs, solveMs]
@@ -1614,6 +1625,7 @@ static int bxNewDesc( int kind )
 	desc->categoryBits = B3_DEFAULT_CATEGORY_BITS;
 	desc->maskBits = B3_DEFAULT_MASK_BITS;
 	desc->meshScale = b3Vec3_one;
+	desc->invokeContactCreation = 1;
 	return slot;
 }
 
@@ -1905,6 +1917,27 @@ BX_EXPORT int bx_ShapeDesc_IsSensor( int slot )
 	return desc == NULL ? 0 : desc->isSensor;
 }
 
+/// Whether a static shape made from this description looks for its own pairs on the next step (1, Box3D's default), or
+/// waits until a moving shape finds it (0). With 0 a static never enters the broad phase's move buffer, which saves the
+/// step the pair slots it would reserve for it (Box3D keeps its step stack at 1.5 times the largest it has needed), and
+/// a static made where a moving shape's fat bounds already reach it is paired only once that shape moves again, so a
+/// static made late pairs on the same step as one made at the start. Off on a container, it is off for every shape made
+/// from its children. Dynamic and kinematic shapes always look for pairs.
+BX_EXPORT void bx_ShapeDesc_SetInvokeContactCreation( int slot, int flag )
+{
+	bxShapeDesc* desc = bxGetDesc( slot );
+	if ( desc != NULL )
+	{
+		desc->invokeContactCreation = flag != 0;
+	}
+}
+
+BX_EXPORT int bx_ShapeDesc_GetInvokeContactCreation( int slot )
+{
+	bxShapeDesc* desc = bxGetDesc( slot );
+	return desc == NULL ? 0 : desc->invokeContactCreation;
+}
+
 static b3AABB bxDescAABB( bxShapeDesc* desc, b3Transform xf, b3Vec3 scale, int depth )
 {
 	b3AABB aabb = { b3Vec3_zero, b3Vec3_zero };
@@ -2165,13 +2198,15 @@ static int bxBakeTransformedMesh( const bxShapeDesc* source, b3Transform xf, b3V
 	return slot;
 }
 
-static void bxInstantiate( bxBody* body, int descSlot, b3Transform xf, b3Vec3 scale, int depth )
+/// invoke is 0 when a container above this description has contact creation off.
+static void bxInstantiate( bxBody* body, int descSlot, b3Transform xf, b3Vec3 scale, int depth, int invoke )
 {
 	bxShapeDesc* desc = bxGetDesc( descSlot );
 	if ( desc == NULL || depth > 8 )
 	{
 		return;
 	}
+	invoke = invoke != 0 && desc->invokeContactCreation != 0;
 
 	b3ShapeDef def = b3DefaultShapeDef();
 	def.density = desc->density;
@@ -2188,6 +2223,7 @@ static void bxInstantiate( bxBody* body, int descSlot, b3Transform xf, b3Vec3 sc
 	def.enableHitEvents = body->hitEvents != 0;
 	// the caller applies the mass once after instantiating every shape of the description
 	def.updateBodyMass = false;
+	def.invokeContactCreation = invoke != 0;
 
 	switch ( desc->kind )
 	{
@@ -2291,7 +2327,8 @@ static void bxInstantiate( bxBody* body, int descSlot, b3Transform xf, b3Vec3 sc
 					break;
 				}
 				bxChild child = container->children[i];
-				bxInstantiate( body, child.desc, b3MulTransforms( xf, child.transform ), bxMulScale( scale, child.scale ), depth + 1 );
+				bxInstantiate( body, child.desc, b3MulTransforms( xf, child.transform ), bxMulScale( scale, child.scale ), depth + 1,
+							   invoke );
 			}
 			break;
 		}
@@ -2308,7 +2345,7 @@ BX_EXPORT void bx_Body_SetShape( int slot, int descSlot )
 	body->shapeDesc = descSlot;
 	if ( descSlot != 0 )
 	{
-		bxInstantiate( body, descSlot, b3Transform_identity, b3Vec3_one, 0 );
+		bxInstantiate( body, descSlot, b3Transform_identity, b3Vec3_one, 0, 1 );
 	}
 	b3Body_ApplyMassFromShapes( body->id );
 }

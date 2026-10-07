@@ -52,6 +52,8 @@ export interface Box3DExports {
     _bx_World_GetAwakeBodyCount(world: number): number;
     /** Joint force/torque threshold events from the last step (0 with the default thresholds). */
     _bx_World_GetJointEventCount(world: number): number;
+    /** The most the world's step stack has held at once, in bytes. */
+    _bx_World_GetStackUsed(world: number): number;
     /** scratch: [bodyCount, shapeCount, contactCount, jointCount, islandCount, stepMs, collideMs, solveMs] */
     _bx_World_GetStats(world: number): void;
 
@@ -198,6 +200,14 @@ export interface Box3DExports {
     _bx_ShapeDesc_SetRollingResistance(desc: number, value: number): void;
     _bx_ShapeDesc_SetSensor(desc: number, flag: number): void;
     _bx_ShapeDesc_IsSensor(desc: number): number;
+    /**
+     * 1 (the default): a static shape made from this description looks for its own pairs on the next step. 0: it never
+     * enters the broad phase's move buffer and waits for a moving shape to find it, which saves the step stack it would
+     * reserve and pairs a static made late on the same step as one made at the start. Off on a container, it is off for
+     * every shape made from its children.
+     */
+    _bx_ShapeDesc_SetInvokeContactCreation(desc: number, flag: number): void;
+    _bx_ShapeDesc_GetInvokeContactCreation(desc: number): number;
     /** scratch: [minx, miny, minz, maxx, maxy, maxz] */
     _bx_ShapeDesc_GetAABB(desc: number): void;
     _bx_ShapeDesc_Destroy(desc: number): void;

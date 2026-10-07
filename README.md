@@ -263,6 +263,7 @@ is not supported yet, it depends on Havok internals.
 | `bx_Body_SetShapeCrush`, `bx_Body_GetShapeCrush` | crushable contacts, see [Patches to Box3D](#patches-to-box3d) |
 | `bx_World_CastShape`, `bx_World_OverlapShape`, `bx_OverlapsPtr` | a convex point cloud with a radius, from an origin given in doubles, cast along a translation or tested for overlap. The cast's fraction is where the surfaces touch: Box3D stops its own casts a linear slop short of that, and the shim moves the fraction on |
 | `bx_Body_GetShapeGeometry`, `bx_GeometryPtr` | a shape's sphere, capsule or hull points, in the body's frame |
+| `bx_ShapeDesc_SetInvokeContactCreation`, `bx_ShapeDesc_GetInvokeContactCreation`, `bx_World_GetStackUsed` | Box3D's `invokeContactCreation` per description, on by default. Off, a static shape never enters the broad phase's move buffer: the first step reserves no pair slots for it (486 bytes a static, which the step stack then keeps for good) and it is paired when a moving shape finds it, so a static made late pairs on the same step as one made at the start. Off on a container, it is off for every shape made from its children. `bx_World_GetStackUsed` says the most the step stack has held |
 
 Box3D creates shapes on bodies while Babylon creates shapes standalone, so a `PhysicsShape` is a description that
 is instantiated on every body it is set on. Changing its filter masks, material or density is applied to the live
