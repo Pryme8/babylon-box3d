@@ -2403,8 +2403,9 @@ static void bxInstantiate( bxBody* body, int descSlot, b3Transform xf, b3Vec3 sc
 	// the caller applies the mass once after instantiating every shape of the description
 	def.updateBodyMass = false;
 	def.invokeContactCreation = invoke != 0;
-	// the shape takes the next index on the body, whichever Box3D body it is made on
-	def.featureKey = ( body->featureKey << BX_FEATURE_INDEX_BITS ) | (uint64_t)body->shapeCount;
+	// the shape takes the next index on the body, whichever Box3D body it is made on; a body without a key leaves its
+	// shapes at zero, so they fall back to their ids as unkeyed shapes do
+	def.featureKey = body->featureKey == 0 ? 0 : ( body->featureKey << BX_FEATURE_INDEX_BITS ) | (uint64_t)body->shapeCount;
 
 	switch ( desc->kind )
 	{

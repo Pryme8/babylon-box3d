@@ -257,6 +257,30 @@ describe("canonical pairs", () => {
     }, 60000);
 });
 
+describe("feature keys", () => {
+    it("go to each shape as the body's key and its index, and come off with zero", async () => {
+        const m = await Box3D();
+        const world = m._bx_CreateWorld(0, 0, 0, 1);
+        const body = m._bx_CreateBody(world, STATIC, 0, 0, 0, 0, 0, 0, 1, 1);
+        const cell = m._bx_ShapeDesc_CreateContainer();
+        for (let i = 0; i < 3; i++) {
+            m._bx_ShapeDesc_AddChild(cell, m._bx_ShapeDesc_CreateSphere(i, 0, 0, 0.2), 0, 0, 0, 0, 0, 0, 1, 1, 1, 1);
+        }
+        const keys = () => [0, 1, 2].map((i) => m._bx_Body_GetShapeFeatureKey(body, i));
+        m._bx_Body_SetShape(body, cell);
+        expect(keys()).toEqual([0, 0, 0]);
+        m._bx_Body_SetFeatureKey(body, 5);
+        expect(m._bx_Body_GetFeatureKey(body)).toBe(5);
+        expect(keys()).toEqual([5 * 2 ** 20, 5 * 2 ** 20 + 1, 5 * 2 ** 20 + 2]);
+        // shaped again, the shapes take the body's key again
+        m._bx_Body_SetShape(body, cell);
+        expect(keys()).toEqual([5 * 2 ** 20, 5 * 2 ** 20 + 1, 5 * 2 ** 20 + 2]);
+        m._bx_Body_SetFeatureKey(body, 0);
+        expect(keys()).toEqual([0, 0, 0]);
+        m._bx_DestroyWorld(world);
+    });
+});
+
 describe("a moved proxy's pairs", () => {
     /** A box teleported into a cluster of 40 small static spheres, each its own body, made in the given order. */
     async function cluster(order: number[]) {
