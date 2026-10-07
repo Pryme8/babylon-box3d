@@ -192,6 +192,18 @@ export interface Box3DExports {
     /** heights: countX * countZ floats indexed [z * countX + x]; materials: one byte a cell, (countX - 1) * (countZ - 1),
      * or 0 for none; local offset (ox, oy, oz) */
     _bx_ShapeDesc_CreateHeightField(heights: number, materials: number, countX: number, countZ: number, sx: number, sy: number, sz: number, clockwise: number, ox: number, oy: number, oz: number): number;
+    /**
+     * Where a mesh or height field description's data starts, and how many bytes it has (0 for any other description).
+     * Box3D keeps either as one block addressed by offsets, with no pointers in it, so the bytes can be copied to another
+     * instance of the same build (one with no world, on a worker) and made into a shape there with
+     * `_bx_ShapeDesc_CreateMeshFromBytes` or `_bx_ShapeDesc_CreateHeightFieldFromBytes`.
+     */
+    _bx_ShapeDesc_GetGeometryBytes(desc: number): number;
+    _bx_ShapeDesc_GetGeometryByteCount(desc: number): number;
+    /** A mesh description from a copy of a mesh block put at `bytes`, with the description's scale. 0 if it is not one. */
+    _bx_ShapeDesc_CreateMeshFromBytes(bytes: number, byteCount: number, sx: number, sy: number, sz: number): number;
+    /** A height field description from a copy of a height field block put at `bytes`, with a local offset. 0 if it is not one. */
+    _bx_ShapeDesc_CreateHeightFieldFromBytes(bytes: number, byteCount: number, ox: number, oy: number, oz: number): number;
     _bx_ShapeDesc_CreateContainer(): number;
     _bx_ShapeDesc_AddChild(parent: number, child: number, px: number, py: number, pz: number, qx: number, qy: number, qz: number, qw: number, sx: number, sy: number, sz: number): void;
     _bx_ShapeDesc_RemoveChild(parent: number, index: number): void;

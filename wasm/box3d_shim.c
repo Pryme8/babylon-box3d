@@ -1813,6 +1813,146 @@ BX_EXPORT int bx_ShapeDesc_CreateHeightField( const float* heights, const unsign
 	return slot;
 }
 
+// Box3D's own allocator (core.c), which b3DestroyMesh and b3DestroyHeightField free with: an imported block must come
+// from it, with its alignment and its byte count.
+extern void* b3Alloc( size_t size );
+
+/// Where a mesh or height field description's data starts in this instance's memory, or 0 for any other description.
+/// Box3D keeps either as one block addressed by offsets from its start, with no pointer in it, so the block's bytes
+/// (bx_ShapeDesc_GetGeometryByteCount of them) can be copied out and made into a shape in another instance of the same
+/// build: a worker's instance with no world builds the geometry, and the simulation's instance only copies it in.
+BX_EXPORT const void* bx_ShapeDesc_GetGeometryBytes( int slot )
+{
+	bxShapeDesc* desc = bxGetDesc( slot );
+	if ( desc == NULL )
+	{
+		return NULL;
+	}
+	if ( desc->kind == bx_meshDesc )
+	{
+		return desc->mesh;
+	}
+	if ( desc->kind == bx_heightFieldDesc )
+	{
+		return desc->heightField;
+	}
+	return NULL;
+}
+
+/// The byte count of the block bx_ShapeDesc_GetGeometryBytes points at, or 0.
+BX_EXPORT int bx_ShapeDesc_GetGeometryByteCount( int slot )
+{
+	bxShapeDesc* desc = bxGetDesc( slot );
+	if ( desc == NULL )
+	{
+		return 0;
+	}
+	if ( desc->kind == bx_meshDesc && desc->mesh != NULL )
+	{
+		return desc->mesh->byteCount;
+	}
+	if ( desc->kind == bx_heightFieldDesc && desc->heightField != NULL )
+	{
+		return desc->heightField->byteCount;
+	}
+	return 0;
+}
+
+// Whether an array of count elements of size bytes at offset lies inside a block of byteCount bytes. An offset of 0
+// means the array is absent.
+static int bxInBlock( int32_t offset, int32_t count, int size, int byteCount )
+{
+	if ( offset == 0 )
+	{
+		return 1;
+	}
+	return offset > 0 && count >= 0 && (int64_t)offset + (int64_t)count * size <= byteCount;
+}
+
+/// A copy of bytes the caller has put in this instance's memory, in a block from Box3D's allocator, if they are a mesh
+/// (kind 3) or height field (kind 4) block of this build, whole and with every array inside it. NULL otherwise.
+static void* bxImportGeometry( const void* bytes, int byteCount, int kind )
+{
+	if ( bytes == NULL || byteCount < 16 )
+	{
+		return NULL;
+	}
+	if ( kind == bx_meshDesc )
+	{
+		if ( byteCount < (int)sizeof( b3MeshData ) )
+		{
+			return NULL;
+		}
+		b3MeshData header;
+		memcpy( &header, bytes, sizeof( header ) );
+		if ( header.version != B3_MESH_VERSION || header.byteCount != byteCount ||
+			 bxInBlock( header.nodeOffset, header.nodeCount, (int)sizeof( b3MeshNode ), byteCount ) == 0 ||
+			 bxInBlock( header.vertexOffset, header.vertexCount, (int)sizeof( b3Vec3 ), byteCount ) == 0 ||
+			 bxInBlock( header.triangleOffset, header.triangleCount, (int)sizeof( b3MeshTriangle ), byteCount ) == 0 ||
+			 bxInBlock( header.materialOffset, header.triangleCount, 1, byteCount ) == 0 ||
+			 bxInBlock( header.flagsOffset, header.triangleCount, 1, byteCount ) == 0 )
+		{
+			return NULL;
+		}
+	}
+	else
+	{
+		if ( byteCount < (int)sizeof( b3HeightFieldData ) )
+		{
+			return NULL;
+		}
+		b3HeightFieldData header;
+		memcpy( &header, bytes, sizeof( header ) );
+		int points = header.columnCount * header.rowCount;
+		int cells = ( header.columnCount - 1 ) * ( header.rowCount - 1 );
+		if ( header.version != B3_HEIGHT_FIELD_VERSION || header.byteCount != byteCount || header.columnCount < 2 ||
+			 header.rowCount < 2 || bxInBlock( header.heightsOffset, points, 2, byteCount ) == 0 ||
+			 bxInBlock( header.materialOffset, cells, 1, byteCount ) == 0 ||
+			 bxInBlock( header.flagsOffset, 2 * cells, 1, byteCount ) == 0 )
+		{
+			return NULL;
+		}
+	}
+	void* block = b3Alloc( (size_t)byteCount );
+	if ( block != NULL )
+	{
+		memcpy( block, bytes, (size_t)byteCount );
+	}
+	return block;
+}
+
+/// A mesh description from the bytes of a mesh block (bx_ShapeDesc_GetGeometryBytes, from this instance or another of
+/// the same build) that the caller has put at `bytes`: the block is copied as it is, and nothing in it needs fixing up.
+/// The scale is the description's, as bx_ShapeDesc_CreateMesh takes it. Returns 0 if the bytes are not such a block.
+BX_EXPORT int bx_ShapeDesc_CreateMeshFromBytes( const void* bytes, int byteCount, float sx, float sy, float sz )
+{
+	b3MeshData* mesh = (b3MeshData*)bxImportGeometry( bytes, byteCount, bx_meshDesc );
+	if ( mesh == NULL )
+	{
+		return 0;
+	}
+	int slot = bxNewDesc( bx_meshDesc );
+	s_descs[slot].mesh = mesh;
+	s_descs[slot].meshScale = bxVec3( sx, sy, sz );
+	return slot;
+}
+
+/// A height field description from the bytes of a height field block, as bx_ShapeDesc_CreateMeshFromBytes makes a mesh.
+/// The block carries its scale, quantization and winding; (ox, oy, oz) is the description's local offset, as
+/// bx_ShapeDesc_CreateHeightField takes it.
+BX_EXPORT int bx_ShapeDesc_CreateHeightFieldFromBytes( const void* bytes, int byteCount, float ox, float oy, float oz )
+{
+	b3HeightFieldData* hf = (b3HeightFieldData*)bxImportGeometry( bytes, byteCount, bx_heightFieldDesc );
+	if ( hf == NULL )
+	{
+		return 0;
+	}
+	int slot = bxNewDesc( bx_heightFieldDesc );
+	s_descs[slot].heightField = hf;
+	s_descs[slot].offset = bxVec3( ox, oy, oz );
+	return slot;
+}
+
 BX_EXPORT int bx_ShapeDesc_CreateContainer( void )
 {
 	return bxNewDesc( bx_containerDesc );
