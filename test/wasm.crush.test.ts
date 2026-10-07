@@ -419,8 +419,10 @@ describe("crushable contacts: rigid contacts are untouched", () => {
     // Box3D's 210-box pyramid (20 rows), stepped for 2 s at 480 Hz: every body's final transform, bit for bit,
     // hashes to what the build before wasm/patches/0003 gave. Rigid contacts keep the wide and scalar paths exactly
     // as they were. The hash is Box3D's, so a new upstream commit or another patch that changes rigid contacts
-    // records it again, and says why in its commit.
-    const PYRAMID_HASH = 0x3e73047d;
+    // records it again, and says why in its commit. wasm/patches/0005 recorded it again: it makes each step's new
+    // contacts in shape order, where they came in the order the broad phase's trees gave them, so the pyramid's
+    // contacts get other ids and the solver meets them in another order.
+    const PYRAMID_HASH = 0xe0a92cff;
 
     it("leaves the 210-box pyramid bit for bit where it was", () => {
         const world = createWorld(-9.81);

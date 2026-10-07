@@ -153,6 +153,15 @@ export interface Box3DExports {
     _bx_Body_ComputeShapeMassData(body: number): void;
     _bx_Body_ApplyMassFromShapes(body: number): void;
     _bx_Body_GetShapeCount(body: number): number;
+    /**
+     * Gives the body a feature key (an integer from 1 to 2^44 - 1; 0 takes it off) and each of its shapes, now and when
+     * it is next shaped, (key << 20) | its index. New contacts are made, continuous collision sweeps and a closest
+     * cast's ties are broken in the order of these keys, so keyed statics pair the same whatever order they were made in.
+     */
+    _bx_Body_SetFeatureKey(body: number, key: number): void;
+    _bx_Body_GetFeatureKey(body: number): number;
+    /** Shape `index`'s own feature key, as Box3D orders by it (exact up to 2^53). */
+    _bx_Body_GetShapeFeatureKey(body: number, index: number): number;
     /** Begin/end touch events and hit events on the body's shapes, enabled separately. */
     _bx_Body_SetEventFlags(body: number, contactEvents: number, hitEvents: number): void;
     /** Bit 1: begin/end touch events, bit 2: hit events. */

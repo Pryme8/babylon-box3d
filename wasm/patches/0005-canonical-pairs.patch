@@ -1,0 +1,339 @@
+diff --git a/include/box3d/box3d.h b/include/box3d/box3d.h
+index 6a78a56..d75b35b 100644
+--- a/include/box3d/box3d.h
++++ b/include/box3d/box3d.h
+@@ -898,6 +898,12 @@ B3_API void b3Shape_SetUserData( b3ShapeId shapeId, void* userData );
+ /// from an event or query.
+ B3_API void* b3Shape_GetUserData( b3ShapeId shapeId );
+ 
++/// Set the shape's feature key, see b3ShapeDef::featureKey. It orders the contacts made from now on.
++B3_API void b3Shape_SetFeatureKey( b3ShapeId shapeId, uint64_t featureKey );
++
++/// Get the shape's feature key.
++B3_API uint64_t b3Shape_GetFeatureKey( b3ShapeId shapeId );
++
+ /// Set the mass density of a shape, usually in kg/m^3.
+ /// This will optionally update the mass properties on the parent body.
+ /// @see b3ShapeDef::density, b3Body_ApplyMassFromShapes
+diff --git a/include/box3d/types.h b/include/box3d/types.h
+index 19850d2..2c3b563 100644
+--- a/include/box3d/types.h
++++ b/include/box3d/types.h
+@@ -465,6 +465,13 @@ typedef struct b3ShapeDef
+ 	/// Use this to store application specific shape data.
+ 	void* userData;
+ 
++	/// A stable key for this shape, unique among the shapes it can touch. A moving shape's new contacts are made in the
++	/// order of the other shapes' keys, continuous collision sweeps its candidates in that order, and so the same shapes
++	/// in reach give the same contacts in the same order whatever order the world made them in, or removed others in.
++	/// Without it they come in the order the broad phase's trees give, which depends on that whole history. Shapes with
++	/// equal keys, such as the default zero, fall back to their ids.
++	uint64_t featureKey;
++
+ 	/// Surface material used on mesh shapes per triangle. Ignored for convex shapes. Ignored for compound shapes.
+ 	b3SurfaceMaterial* materials;
+ 
+diff --git a/src/broad_phase.c b/src/broad_phase.c
+index 6145b97..7a634b6 100644
+--- a/src/broad_phase.c
++++ b/src/broad_phase.c
+@@ -307,10 +307,9 @@ static bool b3PairQueryCallback( int proxyId, uint64_t userData, void* context )
+ 	}
+ 	else
+ 	{
+-		// todo experimenting with ignoring this pair if we ran out of space
++		// Out of room. The index has still counted this pair, so b3UpdateBroadPhasePairs sees the shortfall and finds
++		// every pair again with room for all of them: none is dropped.
+ 		return true;
+-		// pair = (b3MovePair*)b3Alloc( sizeof( b3MovePair ) );
+-		// pair->heap = true;
+ 	}
+ 
+ 	pair->shapeIndexA = shapeIdA;
+@@ -323,6 +322,66 @@ static bool b3PairQueryCallback( int proxyId, uint64_t userData, void* context )
+ 	return true;
+ }
+ 
++// The pair that makes its contact first: the lower feature key of the shape found, then the lower child, then the
++// lower shape id where keys are equal.
++static bool b3MovePairPrecedes( const b3World* world, const b3MovePair* a, const b3MovePair* b )
++{
++	uint64_t keyA = world->shapes.data[a->shapeIndexA].featureKey;
++	uint64_t keyB = world->shapes.data[b->shapeIndexA].featureKey;
++	if ( keyA != keyB )
++	{
++		return keyA < keyB;
++	}
++	if ( a->childIndex != b->childIndex )
++	{
++		return a->childIndex < b->childIndex;
++	}
++	return a->shapeIndexA < b->shapeIndexA;
++}
++
++// Merge sort of one moved proxy's pair list. Contacts are made in list order, which fixes their ids, and so the order
++// the solver meets them. The trees give pairs in the order of their own shape, which is a function of everything ever
++// inserted into and removed from them, so the list is put in feature key order instead.
++static b3MovePair* b3SortMovePairs( const b3World* world, b3MovePair* list )
++{
++	if ( list == NULL || list->next == NULL )
++	{
++		return list;
++	}
++
++	b3MovePair* slow = list;
++	b3MovePair* fast = list->next;
++	while ( fast != NULL && fast->next != NULL )
++	{
++		slow = slow->next;
++		fast = fast->next->next;
++	}
++	b3MovePair* second = slow->next;
++	slow->next = NULL;
++
++	b3MovePair* a = b3SortMovePairs( world, list );
++	b3MovePair* b = b3SortMovePairs( world, second );
++
++	b3MovePair* head = NULL;
++	b3MovePair** tail = &head;
++	while ( a != NULL && b != NULL )
++	{
++		if ( b3MovePairPrecedes( world, b, a ) )
++		{
++			*tail = b;
++			b = b->next;
++		}
++		else
++		{
++			*tail = a;
++			a = a->next;
++		}
++		tail = &( *tail )->next;
++	}
++	*tail = a != NULL ? a : b;
++	return head;
++}
++
+ static void b3FindPairsTask( int startIndex, int endIndex, int workerIndex, void* context )
+ {
+ 	b3TracyCZoneNC( pair_task, "Pair Task", b3_colorAquamarine, true );
+@@ -381,6 +440,8 @@ static void b3FindPairsTask( int startIndex, int endIndex, int workerIndex, void
+ 		queryContext.queryTreeType = b3_dynamicBody;
+ 		b3DynamicTree_Query( bp->trees + b3_dynamicBody, fatAABB, maskBits, requireAllBits, b3PairQueryCallback,
+ 							 &queryContext );
++
++		queryContext.moveResult->pairList = b3SortMovePairs( world, queryContext.moveResult->pairList );
+ 	}
+ 
+ 	b3TracyCZoneEnd( pair_task );
+@@ -427,6 +488,18 @@ void b3UpdateBroadPhasePairs( b3World* world )
+ 	int minRange = 64;
+ 	b3ParallelFor( world, b3FindPairsTask, moveCount, minRange, world, "pairs" );
+ 
++	int pairCount = b3AtomicLoadInt( &bp->movePairIndex );
++	if ( pairCount > bp->movePairCapacity )
++	{
++		// Some pairs found no slot. Nothing the queries read has changed (the trees, the moved proxies, the pair set),
++		// so a second pass with room for every pair finds the same pairs, all of them.
++		b3StackFree( alloc, bp->movePairs );
++		bp->movePairCapacity = pairCount;
++		bp->movePairs = (b3MovePair*)b3StackAlloc( alloc, bp->movePairCapacity * sizeof( b3MovePair ), "move pairs" );
++		b3AtomicStoreInt( &bp->movePairIndex, 0 );
++		b3ParallelFor( world, b3FindPairsTask, moveCount, minRange, world, "pairs" );
++	}
++
+ 	b3TracyCZoneNC( create_contacts, "Create Contacts", b3_colorCoral, true );
+ 
+ 	// Task that can be done in parallel with the narrow-phase
+diff --git a/src/shape.c b/src/shape.c
+index 101e613..62637ed 100644
+--- a/src/shape.c
++++ b/src/shape.c
+@@ -176,6 +176,7 @@ static b3Shape* b3CreateShapeInternal( b3World* world, b3Body* body, b3WorldTran
+ 	shape->filter = def->filter;
+ 	shape->userData = def->userData;
+ 	shape->userShape = NULL;
++	shape->featureKey = def->featureKey;
+ 	shape->flags = 0;
+ 	shape->crushForce = 0.0f;
+ 	shape->crushPlastic = false;
+@@ -1146,6 +1147,20 @@ void* b3Shape_GetUserData( b3ShapeId shapeId )
+ 	return shape->userData;
+ }
+ 
++void b3Shape_SetFeatureKey( b3ShapeId shapeId, uint64_t featureKey )
++{
++	b3World* world = b3GetWorld( shapeId.world0 );
++	b3Shape* shape = b3GetShape( world, shapeId );
++	shape->featureKey = featureKey;
++}
++
++uint64_t b3Shape_GetFeatureKey( b3ShapeId shapeId )
++{
++	b3World* world = b3GetWorld( shapeId.world0 );
++	b3Shape* shape = b3GetShape( world, shapeId );
++	return shape->featureKey;
++}
++
+ void b3Shape_SetName( b3ShapeId shapeId, const char* name )
+ {
+ 	b3World* world = b3GetWorld( shapeId.world0 );
+diff --git a/src/shape.h b/src/shape.h
+index e02bf29..4b48c01 100644
+--- a/src/shape.h
++++ b/src/shape.h
+@@ -56,6 +56,9 @@ typedef struct b3Shape
+ 	void* userData;
+ 	void* userShape;
+ 
++	// Orders this shape's new contacts and continuous collision candidates, see b3ShapeDef::featureKey
++	uint64_t featureKey;
++
+ 	uint32_t nameId;
+ 	uint16_t generation;
+ 
+diff --git a/src/solver.c b/src/solver.c
+index 0de9612..aae230b 100644
+--- a/src/solver.c
++++ b/src/solver.c
+@@ -23,6 +23,8 @@
+ #include <limits.h>
+ #include <stddef.h>
+ #include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
+ 
+ _Static_assert( B3_RESTITUTION_ITERATIONS >= 1, "must be 1 or more" );
+ 
+@@ -313,6 +315,14 @@ static void b3SolveJointsTask( b3SolverBlock block, b3StepContext* context, bool
+ }
+ 
+ #define B2_MAX_CONTINUOUS_SENSOR_HITS 8
++#define B3_CONTINUOUS_LOCAL_CANDIDATES 16
++
++// A shape that passed continuous collision's filters, to be swept once the queries are done
++typedef struct b3ContinuousCandidate
++{
++	uint64_t featureKey;
++	int shapeId;
++} b3ContinuousCandidate;
+ 
+ typedef struct b3ContinuousContext
+ {
+@@ -333,8 +343,45 @@ typedef struct b3ContinuousContext
+ 	int distanceIterations;
+ 	int pushBackIterations;
+ 	int rootIterations;
++
++	// Each sweep is clipped by the fraction the ones before it found, so the order they run in changes the result in
++	// its last bits. The trees give candidates in an order that depends on their history: they are swept in feature key
++	// order instead. The list starts in localCandidates and moves to the heap if it outgrows them.
++	b3ContinuousCandidate localCandidates[B3_CONTINUOUS_LOCAL_CANDIDATES];
++	b3ContinuousCandidate* candidates;
++	int candidateCount;
++	int candidateCapacity;
+ } b3ContinuousContext;
+ 
++static void b3PushContinuousCandidate( b3ContinuousContext* context, const b3Shape* shape )
++{
++	if ( context->candidateCount == context->candidateCapacity )
++	{
++		int capacity = 2 * context->candidateCapacity;
++		b3ContinuousCandidate* candidates = b3Alloc( capacity * sizeof( b3ContinuousCandidate ) );
++		memcpy( candidates, context->candidates, context->candidateCount * sizeof( b3ContinuousCandidate ) );
++		if ( context->candidates != context->localCandidates )
++		{
++			b3Free( context->candidates, context->candidateCapacity * sizeof( b3ContinuousCandidate ) );
++		}
++		context->candidates = candidates;
++		context->candidateCapacity = capacity;
++	}
++	context->candidates[context->candidateCount] = (b3ContinuousCandidate){ shape->featureKey, shape->id };
++	context->candidateCount += 1;
++}
++
++static int b3CompareContinuousCandidates( const void* a, const void* b )
++{
++	const b3ContinuousCandidate* ca = a;
++	const b3ContinuousCandidate* cb = b;
++	if ( ca->featureKey != cb->featureKey )
++	{
++		return ca->featureKey < cb->featureKey ? -1 : 1;
++	}
++	return ( ca->shapeId > cb->shapeId ) - ( ca->shapeId < cb->shapeId );
++}
++
+ // This is called from b3DynamicTree_Query for continuous collision
+ static bool b3ContinuousQueryCallback( int proxyId, uint64_t userData, void* context )
+ {
+@@ -413,6 +460,24 @@ static bool b3ContinuousQueryCallback( int proxyId, uint64_t userData, void* con
+ 		}
+ 	}
+ 
++	b3PushContinuousCandidate( continuousContext, shape );
++
++	// Continue query
++	return true;
++}
++
++// Time of impact of the fast shape against one candidate that passed the filters
++static void b3SweepContinuousCandidate( b3ContinuousContext* continuousContext, int shapeId )
++{
++	b3World* world = continuousContext->world;
++	b3Shape* fastShape = continuousContext->fastShape;
++	b3BodySim* fastBodySim = continuousContext->fastBodySim;
++	b3Shape* shape = b3Array_Get( world->shapes, shapeId );
++	b3Body* body = b3Array_Get( world->bodies, shape->bodyId );
++	b3Body* fastBody = b3Array_Get( world->bodies, fastBodySim->bodyId );
++	b3BodySim* bodySim = b3GetBodySim( world, body );
++	bool isSensor = shape->sensorIndex != B3_NULL_INDEX;
++
+ 	uint64_t ticks = b3GetTicks();
+ 
+ 	// todo does having a sweep on shapeA help with bullets?
+@@ -467,9 +532,20 @@ static bool b3ContinuousQueryCallback( int proxyId, uint64_t userData, void* con
+ 		const char* name = b3FindNameWithDefault( &world->names, body->nameId, "NULL" );
+ 		b3Log( "CCD stall: duration %.1f ms for %s versus %s", ms, nameFast, name );
+ 	}
++}
+ 
+-	// Continue query
+-	return true;
++// Sweeps the candidates the queries gathered, in feature key order, then empties the list
++static void b3SweepContinuousCandidates( b3ContinuousContext* context )
++{
++	if ( context->candidateCount > 1 )
++	{
++		qsort( context->candidates, context->candidateCount, sizeof( b3ContinuousCandidate ), b3CompareContinuousCandidates );
++	}
++	for ( int i = 0; i < context->candidateCount; ++i )
++	{
++		b3SweepContinuousCandidate( context, context->candidates[i].shapeId );
++	}
++	context->candidateCount = 0;
+ }
+ 
+ // Continuous collision of dynamic versus static
+@@ -507,6 +583,8 @@ static void b3SolveContinuous( b3World* world, int bodySimIndex, b3TaskContext*
+ 	context.base = base;
+ 	context.fastBodySim = fastBodySim;
+ 	context.fraction = 1.0f;
++	context.candidates = context.localCandidates;
++	context.candidateCapacity = B3_CONTINUOUS_LOCAL_CANDIDATES;
+ 
+ 	bool isBullet = ( fastBodySim->flags & b3_isBullet ) != 0;
+ 
+@@ -547,6 +625,13 @@ static void b3SolveContinuous( b3World* world, int bodySimIndex, b3TaskContext*
+ 			b3DynamicTree_Query( kinematicTree, sweptBox, B3_DEFAULT_MASK_BITS, false, b3ContinuousQueryCallback, &context );
+ 			b3DynamicTree_Query( dynamicTree, sweptBox, B3_DEFAULT_MASK_BITS, false, b3ContinuousQueryCallback, &context );
+ 		}
++
++		b3SweepContinuousCandidates( &context );
++	}
++
++	if ( context.candidates != context.localCandidates )
++	{
++		b3Free( context.candidates, context.candidateCapacity * sizeof( b3ContinuousCandidate ) );
+ 	}
+ 
+ 	const float speculativeScalar = B3_SPECULATIVE_DISTANCE;

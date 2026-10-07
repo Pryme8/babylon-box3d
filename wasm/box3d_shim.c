@@ -106,7 +106,12 @@ typedef struct bxBody
 	bxHelper* helpers;
 	int helperCount;
 	int helperCapacity;
+	// The body's feature key: each of its shapes gets (featureKey << BX_FEATURE_INDEX_BITS) | its index in the body as
+	// Box3D's b3ShapeDef::featureKey, which orders new contacts, continuous collision and cast ties. 0 until it is set.
+	uint64_t featureKey;
 } bxBody;
+
+#define BX_FEATURE_INDEX_BITS 20
 
 static void bxReleaseBodyShapes( bxBody* body, int destroyShapes );
 
@@ -1581,6 +1586,40 @@ BX_EXPORT int bx_Body_GetShapeCount( int slot )
 	return body->shapeCount;
 }
 
+/// Gives the body a feature key, an integer from 1 to 2^44 - 1 passed as a double, and each of its shapes, now and when
+/// it is next shaped, the key (key << 20) | its index in the body. A moving shape's new contacts are made in the order
+/// of these keys, continuous collision sweeps in that order and a closest cast's tie goes to the lower key, so statics
+/// keyed by what they are (a cell, a piece) give the same contacts in the same order however and whenever they were
+/// made. Keys must differ between bodies a moving shape can reach. 0 takes the key off.
+BX_EXPORT void bx_Body_SetFeatureKey( int slot, double key )
+{
+	BX_BODY( slot );
+	uint64_t bodyKey = key >= 1.0 && key < 17592186044416.0 ? (uint64_t)key : 0;
+	body->featureKey = bodyKey;
+	for ( int i = 0; i < body->shapeCount; ++i )
+	{
+		if ( b3Shape_IsValid( body->shapes[i] ) )
+		{
+			b3Shape_SetFeatureKey( body->shapes[i], bodyKey == 0 ? 0 : ( bodyKey << BX_FEATURE_INDEX_BITS ) | (uint64_t)i );
+		}
+	}
+}
+
+BX_EXPORT double bx_Body_GetFeatureKey( int slot )
+{
+	BX_BODY_RET( slot, 0.0 );
+	return (double)body->featureKey;
+}
+
+static b3ShapeId bxBodyShape( int slot, int index );
+
+/// Shape `index`'s own feature key, as Box3D orders by it, passed as a double: exact up to 2^53.
+BX_EXPORT double bx_Body_GetShapeFeatureKey( int slot, int index )
+{
+	b3ShapeId shapeId = bxBodyShape( slot, index );
+	return B3_IS_NULL( shapeId ) ? 0.0 : (double)b3Shape_GetFeatureKey( shapeId );
+}
+
 /// Begin/end touch events and hit events are enabled separately so a body only pays for the events it asked for.
 BX_EXPORT void bx_Body_SetEventFlags( int slot, int contactEvents, int hitEvents )
 {
@@ -2224,6 +2263,8 @@ static void bxInstantiate( bxBody* body, int descSlot, b3Transform xf, b3Vec3 sc
 	// the caller applies the mass once after instantiating every shape of the description
 	def.updateBodyMass = false;
 	def.invokeContactCreation = invoke != 0;
+	// the shape takes the next index on the body, whichever Box3D body it is made on
+	def.featureKey = ( body->featureKey << BX_FEATURE_INDEX_BITS ) | (uint64_t)body->shapeCount;
 
 	switch ( desc->kind )
 	{
@@ -3271,7 +3312,26 @@ typedef struct bxRayContext
 	int hitSensors;
 	int closestOnly;
 	int count;
+	// the closest hit so far, for ties
+	uint64_t bestKey;
+	int bestBody;
+	int bestIndex;
 } bxRayContext;
+
+/// Whether a hit on (key, body, index) wins a tie against the closest so far: the lower feature key, then the lower body
+/// slot and shape index, so a tie does not go to whichever shape the broad phase's tree happened to give first.
+static int bxHitPrecedes( uint64_t key, int body, int index, uint64_t bestKey, int bestBody, int bestIndex )
+{
+	if ( key != bestKey )
+	{
+		return key < bestKey;
+	}
+	if ( body != bestBody )
+	{
+		return body < bestBody;
+	}
+	return index < bestIndex;
+}
 
 static bxFloatBuffer s_rayHits;
 #define BX_RAY_HIT_STRIDE 11
@@ -3296,6 +3356,26 @@ static float bxRayCallback( b3ShapeId shapeId, b3Pos point, b3Vec3 normal, float
 	{
 		return -1.0f;
 	}
+	int shapeIndex = bxShapeIndex( s_bodies + bodySlot, shapeId );
+	// The ray is clipped just past the closest hit, not at it, so a shape that ties with it is still reported, and the
+	// tie goes by feature key.
+	float clip = b3MinFloat( nextafterf( fraction, 2.0f ), 1.0f );
+	if ( ctx->closestOnly )
+	{
+		uint64_t key = b3Shape_GetFeatureKey( shapeId );
+		if ( ctx->count > 0 )
+		{
+			float best = s_rayHits.data[6];
+			if ( fraction > best ||
+				 ( fraction == best && bxHitPrecedes( key, bodySlot, shapeIndex, ctx->bestKey, ctx->bestBody, ctx->bestIndex ) == 0 ) )
+			{
+				return b3MinFloat( nextafterf( best, 2.0f ), 1.0f );
+			}
+		}
+		ctx->bestKey = key;
+		ctx->bestBody = bodySlot;
+		ctx->bestIndex = shapeIndex;
+	}
 	int index = ctx->closestOnly ? 0 : ctx->count;
 	bxFloatBuffer_Reserve( &s_rayHits, ( index + 1 ) * BX_RAY_HIT_STRIDE );
 	float* out = s_rayHits.data + index * BX_RAY_HIT_STRIDE;
@@ -3309,9 +3389,9 @@ static float bxRayCallback( b3ShapeId shapeId, b3Pos point, b3Vec3 normal, float
 	out[7] = (float)bodySlot;
 	out[8] = (float)bxDescSlotFromShape( shapeId );
 	out[9] = (float)triangleIndex;
-	out[10] = (float)bxShapeIndex( s_bodies + bodySlot, shapeId );
+	out[10] = (float)shapeIndex;
 	ctx->count = ctx->closestOnly ? 1 : ctx->count + 1;
-	return ctx->closestOnly ? fraction : 1.0f;
+	return ctx->closestOnly ? clip : 1.0f;
 }
 
 /// Casts a ray from origin along translation. Returns the number of hits written to bx_RayHitsPtr().
@@ -3324,7 +3404,7 @@ BX_EXPORT int bx_World_CastRay( int w, float ox, float oy, float oz, float dx, f
 	{
 		return 0;
 	}
-	bxRayContext ctx = { ignoreBody, hitSensors, closestOnly, 0 };
+	bxRayContext ctx = { ignoreBody, hitSensors, closestOnly, 0, 0, 0, 0 };
 	b3QueryFilter filter = b3DefaultQueryFilter();
 	filter.categoryBits = (uint64_t)categoryBits;
 	filter.maskBits = (uint64_t)maskBits;
@@ -3346,6 +3426,10 @@ typedef struct bxShapeCastContext
 	int count;
 	float radius;
 	b3Vec3 translation;
+	// the closest hit so far, for ties
+	uint64_t bestKey;
+	int bestBody;
+	int bestIndex;
 } bxShapeCastContext;
 
 // Box3D's shape cast stops where the two cores are max(slop, radii - slop) apart, so that a body moved to the hit is
@@ -3391,12 +3475,20 @@ static float bxShapeCastCallback( b3ShapeId shapeId, b3Pos point, b3Vec3 normal,
 	touch = b3MaxFloat( touch, 0.0f );
 
 	int index = ctx->count;
+	int shapeIndex = bxShapeIndex( s_bodies + bodySlot, shapeId );
 	if ( ctx->closestOnly )
 	{
-		if ( ctx->count > 0 && s_rayHits.data[6] <= touch )
+		// a tie goes by feature key, not to whichever shape the tree gave first
+		uint64_t key = b3Shape_GetFeatureKey( shapeId );
+		if ( ctx->count > 0 &&
+			 ( s_rayHits.data[6] < touch ||
+			   ( s_rayHits.data[6] == touch && bxHitPrecedes( key, bodySlot, shapeIndex, ctx->bestKey, ctx->bestBody, ctx->bestIndex ) == 0 ) ) )
 		{
 			return 1.0f;
 		}
+		ctx->bestKey = key;
+		ctx->bestBody = bodySlot;
+		ctx->bestIndex = shapeIndex;
 		index = 0;
 	}
 	bxFloatBuffer_Reserve( &s_rayHits, ( index + 1 ) * BX_RAY_HIT_STRIDE );
@@ -3411,7 +3503,7 @@ static float bxShapeCastCallback( b3ShapeId shapeId, b3Pos point, b3Vec3 normal,
 	out[7] = (float)bodySlot;
 	out[8] = (float)bxDescSlotFromShape( shapeId );
 	out[9] = (float)triangleIndex;
-	out[10] = (float)bxShapeIndex( s_bodies + bodySlot, shapeId );
+	out[10] = (float)shapeIndex;
 	ctx->count = ctx->closestOnly ? 1 : ctx->count + 1;
 	return 1.0f;
 }
@@ -3428,7 +3520,7 @@ BX_EXPORT int bx_World_CastShape( int w, double ox, double oy, double oz, const 
 	{
 		return 0;
 	}
-	bxShapeCastContext ctx = { ignoreBody, closestOnly, 0, radius, bxVec3( dx, dy, dz ) };
+	bxShapeCastContext ctx = { ignoreBody, closestOnly, 0, radius, bxVec3( dx, dy, dz ), 0, 0, 0 };
 	b3QueryFilter filter = b3DefaultQueryFilter();
 	filter.categoryBits = (uint64_t)categoryBits;
 	filter.maskBits = (uint64_t)maskBits;
