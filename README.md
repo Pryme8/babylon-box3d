@@ -51,9 +51,9 @@ is in [the documentation page](docs/communityExtensions/box3dPhysics.md#playgrou
 
 Like Havok's UMD build, this runs from plain files in a folder. Download these three and put them next to your page:
 
-- [box3d.umd.js](https://unpkg.com/babylon-box3d@0.8.0/lib/umd/box3d.umd.js), the WebAssembly loader (global `Box3D`)
-- [box3d.umd.wasm](https://unpkg.com/babylon-box3d@0.8.0/lib/umd/box3d.umd.wasm), the engine, found next to the loader
-- [babylon.box3d.min.js](https://unpkg.com/babylon-box3d@0.8.0/umd/babylon.box3d.min.js), the plugin (global `BABYLONBOX3D`)
+- [box3d.umd.js](https://unpkg.com/babylon-box3d/lib/umd/box3d.umd.js), the WebAssembly loader (global `Box3D`)
+- [box3d.umd.wasm](https://unpkg.com/babylon-box3d/lib/umd/box3d.umd.wasm), the engine, found next to the loader
+- [babylon.box3d.min.js](https://unpkg.com/babylon-box3d/umd/babylon.box3d.min.js), the plugin (global `BABYLONBOX3D`)
 
 Then load them after `babylon.js` with the same three script tags as above, pointing at the local files. The folder
 has to be opened through a web server rather than by double clicking the page: browsers refuse to load a `.wasm` from
