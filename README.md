@@ -290,8 +290,31 @@ joint above.
 `SIMULATION_CONTROLLED` hands it back to the solver, asleep until something wakes it.
 
 Box3D extras on the plugin: `explode`, `createWheelJoint` (suspension, steering, spin motor), `createParallelJoint`,
-`setShapeFilterGroup`, `setShapeRollingResistance`, `setAllowFastRotation`, `getStats`. `PhysicsCharacterController`
-is not supported yet, it depends on Havok internals.
+`setShapeFilterGroup`, `setShapeRollingResistance`, `setAllowFastRotation`, `setBodyClipPlane`, `getStats`.
+`PhysicsCharacterController` is not supported yet, it depends on Havok internals.
+
+**Clip planes (portals).** `plugin.setBodyClipPlane(body, plane, collideMask?)` drops every contact point of the body
+on the plane's positive side, the side Babylon's own clip planes hide, so the plane that hides the part of a mesh gone
+into a portal also lets that part pass through the wall and whatever else is behind it, while the rest of the body
+keeps colliding. Each point is tested on its own, against convex shapes, meshes and height fields alike, inside the
+step with no callback into JavaScript, and continuous collision ignores hits there too. Points within 1 cm (twice
+Box3D's linear slop) in front of the plane count as past it, so a surface lying in the plane is open as well, and a
+speculative point, made while the surfaces are still apart, is also tested where it meets the other shape, so a body
+falling fast into a portal does not stop on the surface first. `collideMask`
+limits it to shapes whose membership mask meets it: leave the sides of the opening out and a body hanging over its
+edge rests on them. `null` stops clipping, and `getBodyClipPlane` reads it back.
+
+```ts
+import { Plane } from "@babylonjs/core/Maths/math.plane";
+
+// a portal on a wall, its normal pointing out of the wall: clip what is past it
+const clip = Plane.FromPositionAndNormal(portalCenter, portalNormal.negate());
+plugin.setBodyClipPlane(body, clip, ~PORTAL_RIM >>> 0);
+```
+
+`?demo=portal` is a working pair: a floor portal and a wall portal, long planks hanging half through, teleporting with
+their velocity turned once their centre crosses, and the rim built from boxes on their own category
+([demo/src/portal.ts](demo/src/portal.ts)). Havok has no equivalent.
 
 **Beyond Babylon's API.** A simulation that drives the module directly, without Babylon, also has these raw exports
 (typed in `lib/*/box3d.d.ts`, tested in `test/wasm.*.test.ts`):
@@ -301,6 +324,7 @@ is not supported yet, it depends on Havok internals.
 | `bx_Body_GetContacts`, `bx_BodyContactsPtr` | every touching manifold on a body as the body feels it: the shapes on both sides by index, the normal it is pushed along, friction and twist, and per point the position, separation, impulses, approach speed, and the triangle and material met on a mesh or height field |
 | `bx_Body_SetShapeHull`, `bx_Body_TranslateShape`, `bx_Body_SetShapeFilter`, `bx_Body_RemoveShape`, `bx_Body_HasShape`, `bx_Body_GetShapeInfo` | per-shape handles: change one of a body's shapes and reset only its contacts, where `bx_Body_SetShape` rebuilds them all. A shape keeps its index for the body's lifetime, removed or not, and contact events (two floats appended) and ray hits (the last float) carry it |
 | `bx_Body_SetShapeCrush`, `bx_Body_GetShapeCrush` | crushable contacts, see [Patches to Box3D](#patches-to-box3d) |
+| `bx_Body_SetClipPlane`, `bx_Body_GetClipPlane` | clip planes, see `setBodyClipPlane` above and [Patches to Box3D](#patches-to-box3d) |
 | `bx_World_CastShape`, `bx_World_OverlapShape`, `bx_OverlapsPtr` | a convex point cloud with a radius, from an origin given in doubles, cast along a translation or tested for overlap. The cast's fraction is where the surfaces touch: Box3D stops its own casts a linear slop short of that, and the shim moves the fraction on |
 | `bx_Body_GetShapeGeometry`, `bx_GeometryPtr` | a shape's sphere, capsule or hull points, in the body's frame |
 | `bx_Body_SetFeatureKey`, `bx_Body_GetFeatureKey`, `bx_Body_GetShapeFeatureKey` | canonical pairs, see [Patches to Box3D](#patches-to-box3d): a body's key (1 to 2^44 - 1, as a double) gives each of its shapes the key `(key << 20) \| index`, by which new contacts are made, continuous collision sweeps, and a closest ray or shape cast breaks a tie (then by body slot and shape index) |
@@ -418,9 +442,10 @@ stays exactly upstream's commit, and a change to the patch set rebuilds every ob
 | `0003-crushable-contacts.patch` | `b3Shape_SetCrushLimit(shape, maxForce, plastic)`, `b3Shape_GetCrushLimit` and `b3Shape_IsCrushPlastic` (shim: `bx_Body_SetShapeCrush(body, i, maxForce, plastic)`, `bx_Body_GetShapeCrush`): each contact of a crushable shape pushes with at most `maxForce` newtons, the smaller of its two shapes' limits, shared between its points, so a body meeting something rigid decelerates over a distance instead of stopping within a step. A plastic contact gets no push-out and no restitution, so it keeps the overlap it reaches. Crushable contacts are routed to the scalar solver path, where each point's accumulated impulse is clamped; a point still apart pushes only for the part of the substep after the surfaces meet. Rigid contacts are untouched, bit for bit. The limit may change every step, and a shape turning crushable or rigid keeps its contacts. |
 | `0004-hull-builder-fails-instead-of-spinning.patch` | `b3CreateHull` returns NULL where it used to loop forever. A flat or nearly flat point set a few metres from the origin (a crushed panel, a slab) can leave the builder's half-edge mesh inconsistent: a merge leaves two faces that share every edge and `b3HullBuilder_ConnectFaces` walks round them without end, or a face's ring stops closing and `b3NewellPlane` does. Such a call never returned and locked whatever made it. Now every walk over the mesh counts its steps against the edge pool, the merge loops count merges against the face pool, and the horizon's stack and edge list check their capacity, which only asserts guarded before. None of these limits can be reached by a consistent mesh, and a build that reaches one returns NULL (shim: `bx_ShapeDesc_CreateHull` and `bx_Body_SetShapeHull` return 0, and the plugin throws for a `CONVEX_HULL` shape). Hulls that were built before are built the same, bit for bit. |
 | `0005-canonical-pairs.patch` | `b3ShapeDef::featureKey`, `b3Shape_SetFeatureKey` and `b3Shape_GetFeatureKey` (shim: `bx_Body_SetFeatureKey`): a moved proxy's new pairs are sorted by the other shape's feature key, then child index, then shape id, before their contacts are made. Contact ids, and with them the order the solver meets contacts, came from the order the static tree gave pairs, which is a function of every insertion and removal it has seen, so the same statics in reach could collide differently depending on how and when the world was built. A moved proxy's pairs are no longer dropped past sixteen: if the step's pair slots run out, the pairs are found again with room for all of them. Continuous collision gathers its candidates, sorts them by key and sweeps them in that order, since each sweep is clipped by the ones before it. Shapes without a key fall back to their ids, so a world without keys behaves as before except where a step's new pairs came out of the tree in another order. |
+| `0006-manifold-callback.patch` | `b3World_SetManifoldCallback(world, fcn, context)`: a `b3ManifoldFcn` called with all of a contact's manifolds after they are computed, mesh and height field contacts included, when either shape has pre-solve events on. It may remove points and manifolds and returns how many manifolds are left; a manifold left with no points is dropped and zero disables the contact for the step. Box3D's own pre-solve callback only sees the first point of the first manifold and is never called for meshes or height fields. While the callback is set it replaces the pre-solve callback for these contacts, which still runs for continuous collision, and these contacts are not recycled, so the callback sees every step. The shim uses it for clip planes (`bx_Body_SetClipPlane`); shapes without pre-solve events are untouched, bit for bit. |
 
-`test/wasm.patches.test.ts` covers 0001 and 0002, `test/wasm.crush.test.ts` covers 0003, `test/wasm.hulls.test.ts` covers 0004
-and `test/wasm.canonicalPairs.test.ts` covers 0005.
+`test/wasm.patches.test.ts` covers 0001 and 0002, `test/wasm.crush.test.ts` covers 0003, `test/wasm.hulls.test.ts` covers 0004,
+`test/wasm.canonicalPairs.test.ts` covers 0005 and `test/wasm.clipPlane.test.ts` covers 0006.
 None has been offered upstream.
 
 **Crush accuracy.** Against a constant limit the crush depth lands within 1.5% of the continuous answer at 480 Hz

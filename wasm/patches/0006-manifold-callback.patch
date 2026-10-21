@@ -1,0 +1,148 @@
+diff --git a/include/box3d/box3d.h b/include/box3d/box3d.h
+index 6a78a56..a7d9c1a 100644
+--- a/include/box3d/box3d.h
++++ b/include/box3d/box3d.h
+@@ -165,6 +165,9 @@ B3_API void b3World_SetCustomFilterCallback( b3WorldId worldId, b3CustomFilterFc
+ /// Register the pre-solve callback. This is optional.
+ B3_API void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* context );
+ 
++/// Register the manifold callback, which may remove contact points. Pass NULL to clear it. @see b3ManifoldFcn
++B3_API void b3World_SetManifoldCallback( b3WorldId worldId, b3ManifoldFcn* fcn, void* context );
++
+ /// Set the gravity vector for the entire world. Box3D has no concept of an up direction and this
+ /// is left as a decision for the application. Usually in m/s^2.
+ /// @see b3WorldDef
+diff --git a/include/box3d/types.h b/include/box3d/types.h
+index 19850d2..db0cf53 100644
+--- a/include/box3d/types.h
++++ b/include/box3d/types.h
+@@ -88,6 +88,23 @@ typedef bool b3CustomFilterFcn( b3ShapeId shapeIdA, b3ShapeId shapeIdB, void* co
+ /// @ingroup world
+ typedef bool b3PreSolveFcn( b3ShapeId shapeIdA, b3ShapeId shapeIdB, b3Pos point, b3Vec3 normal, void* context );
+ 
++typedef struct b3Manifold b3Manifold;
++
++/// Prototype for a manifold callback.
++/// This is called after a contact's manifolds are computed, mesh and height field contacts included, with all of
++/// them. It may remove points, by moving the points it keeps to the front of a manifold's points and lowering its
++/// pointCount, and remove manifolds the same way, and returns how many manifolds are left. Zero disables the contact
++/// this step. Anchors are relative to originA, the origin of shape A's body.
++/// Notes:
++/// - this function must be thread-safe
++/// - this is only called if one of the two shapes has enabled pre-solve events
++/// - while it is set it replaces the pre-solve callback for these contacts, which still runs for continuous collision
++/// - these contacts are not recycled, so the callback sees every step's manifolds
++/// @warning Do not attempt to modify the world inside this callback
++/// @ingroup world
++typedef int b3ManifoldFcn( b3ShapeId shapeIdA, b3ShapeId shapeIdB, b3Pos originA, b3Manifold* manifolds, int manifoldCount,
++						   void* context );
++
+ /// Prototype callback for overlap queries.
+ /// Called for each shape found in the query.
+ /// @see b3World_OverlapAABB
+diff --git a/src/contact.c b/src/contact.c
+index 73a363f..84fa8c4 100644
+--- a/src/contact.c
++++ b/src/contact.c
+@@ -698,7 +698,7 @@ static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* c
+ 	b3Vec3 tangentVelocityB = b3RotateVector( xfB.q, materialB->tangentVelocity );
+ 	contact->tangentVelocity = b3Sub( tangentVelocityA, tangentVelocityB );
+ 
+-	if ( world->preSolveFcn && ( contact->flags & b3_simEnablePreSolveEvents ) != 0 )
++	if ( world->preSolveFcn && world->manifoldFcn == NULL && ( contact->flags & b3_simEnablePreSolveEvents ) != 0 )
+ 	{
+ 		b3ShapeId shapeIdA = { shapeA->id + 1, world->worldId, shapeA->generation };
+ 		b3ShapeId shapeIdB = { shapeB->id + 1, world->worldId, shapeB->generation };
+@@ -860,6 +860,43 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
+ 		touching = b3UpdateConvexContact( world, workerIndex, contact, shapeA, xfA, shapeB, xfB, flip, arena );
+ 	}
+ 
++	if ( touching && world->manifoldFcn != NULL &&
++		 ( ( shapeA->flags & b3_enablePreSolveEvents ) || ( shapeB->flags & b3_enablePreSolveEvents ) ) )
++	{
++		b3ShapeId shapeIdA = { shapeA->id + 1, world->worldId, shapeA->generation };
++		b3ShapeId shapeIdB = { shapeB->id + 1, world->worldId, shapeB->generation };
++
++		// this call assumes thread safety
++		int oldCount = contact->manifoldCount;
++		int count = world->manifoldFcn( shapeIdA, shapeIdB, xfA.p, contact->manifolds, oldCount, world->manifoldContext );
++		count = b3ClampInt( count, 0, oldCount );
++		for ( int i = 0; i < count; ++i )
++		{
++			if ( contact->manifolds[i].pointCount <= 0 )
++			{
++				// a manifold left without points is dropped
++				contact->manifolds[i] = contact->manifolds[count - 1];
++				count -= 1;
++				i -= 1;
++			}
++		}
++
++		if ( count < oldCount )
++		{
++			// manifolds come from allocators sized by their count
++			b3Manifold* manifolds = NULL;
++			if ( count > 0 )
++			{
++				manifolds = b3AllocateManifolds( world, count );
++				memcpy( manifolds, contact->manifolds, count * sizeof( b3Manifold ) );
++			}
++			b3FreeManifolds( world, contact->manifolds, oldCount );
++			contact->manifolds = manifolds;
++			contact->manifoldCount = count;
++			touching = count > 0;
++		}
++	}
++
+ 	if ( touching )
+ 	{
+ 		b3Vec3 centerA = b3RotateVector( xfA.q, localCenterA );
+diff --git a/src/physics_world.c b/src/physics_world.c
+index e456590..0173d4b 100644
+--- a/src/physics_world.c
++++ b/src/physics_world.c
+@@ -653,7 +653,11 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+ 		// Contact recycling optimization. Please cite this library if you use this optimization.
+ 		// This is inspired by persistent contact manifolds used in some physics engines, such as PhysX.
+ 		// However, this allows larger relative motion and has fewer tuning parameters (just one).
+-		if ( ( isFast == false || isMeshContact == false ) && recycleDistance > 0.0f &&
++		// a manifold callback has to see every step's manifolds, so its contacts are not recycled
++		bool filtered = world->manifoldFcn != NULL &&
++						( ( shapeA->flags & b3_enablePreSolveEvents ) || ( shapeB->flags & b3_enablePreSolveEvents ) );
++
++		if ( filtered == false && ( isFast == false || isMeshContact == false ) && recycleDistance > 0.0f &&
+ 			 ( contact->flags & b3_relativeTransformValid ) && ( contact->flags & b3_contactRecycleFlag ) )
+ 		{
+ 			// The scalar part of b3InvMulQuat is just the quaternion dot product.
+@@ -3315,6 +3319,17 @@ void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* c
+ 	world->preSolveContext = context;
+ }
+ 
++void b3World_SetManifoldCallback( b3WorldId worldId, b3ManifoldFcn* fcn, void* context )
++{
++	b3World* world = b3GetUnlockedWorldFromId( worldId );
++	if ( world == NULL )
++	{
++		return;
++	}
++	world->manifoldFcn = fcn;
++	world->manifoldContext = context;
++}
++
+ void b3World_SetGravity( b3WorldId worldId, b3Vec3 gravity )
+ {
+ 	b3World* world = b3GetWorldFromId( worldId );
+diff --git a/src/physics_world.h b/src/physics_world.h
+index 8bd3df8..89facc1 100644
+--- a/src/physics_world.h
++++ b/src/physics_world.h
+@@ -249,6 +249,9 @@ typedef struct b3World
+ 	b3PreSolveFcn* preSolveFcn;
+ 	void* preSolveContext;
+ 
++	b3ManifoldFcn* manifoldFcn;
++	void* manifoldContext;
++
+ 	b3CustomFilterFcn* customFilterFcn;
+ 	void* customFilterContext;
+ 

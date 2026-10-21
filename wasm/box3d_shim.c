@@ -157,6 +157,12 @@ typedef struct bxBody
 	// The body's feature key: each of its shapes gets (featureKey << BX_FEATURE_INDEX_BITS) | its index in the body as
 	// Box3D's b3ShapeDef::featureKey, which orders new contacts, continuous collision and cast ties. 0 until it is set.
 	uint64_t featureKey;
+	// A clip plane (wasm/patches/0006): contact points on its positive side, where n.p + d > 0 like Babylon's clip
+	// planes, or within twice the linear slop of it, are dropped from this body's contacts with shapes whose category
+	// bits meet clipMask. Off while clipEnabled is 0.
+	int clipEnabled;
+	double clipPlane[4];
+	uint64_t clipMask;
 } bxBody;
 
 #define BX_FEATURE_INDEX_BITS 20
@@ -603,6 +609,129 @@ static void bxResetTasks( void )
 // World
 // ---------------------------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------------------------
+// Clip planes (wasm/patches/0006)
+// ---------------------------------------------------------------------------------------------
+
+// Called from Box3D's workers during a step: only reads.
+static const bxBody* bxClipBody( b3ShapeId shapeId, b3ShapeId otherId )
+{
+	int slot = (int)(intptr_t)b3Body_GetUserData( b3Shape_GetBody( shapeId ) );
+	const bxBody* body = s_bodies + slot;
+	if ( slot <= 0 || slot >= s_bodyCount || body->clipEnabled == 0 )
+	{
+		return NULL;
+	}
+	return ( b3Shape_GetFilter( otherId ).categoryBits & body->clipMask ) != 0 ? body : NULL;
+}
+
+static int bxIsClipped( const bxBody* body, b3Pos point )
+{
+	if ( body == NULL )
+	{
+		return 0;
+	}
+	// A surface lying in the plane, such as the wall a portal is on, is clipped too: points within twice the linear
+	// slop in front of the plane count as past it, which covers a resting contact's point between the surfaces and the
+	// 5 mm skin mesh and height field contacts carry.
+	const double* n = body->clipPlane;
+	return n[0] * point.x + n[1] * point.y + n[2] * point.z + n[3] > -2.0 * B3_LINEAR_SLOP;
+}
+
+// Drops the points either body's clip plane clips; Box3D drops the manifolds left empty.
+static int bxClipManifolds( b3ShapeId shapeIdA, b3ShapeId shapeIdB, b3Pos originA, b3Manifold* manifolds, int manifoldCount,
+							void* context )
+{
+	(void)context;
+	const bxBody* a = bxClipBody( shapeIdA, shapeIdB );
+	const bxBody* b = bxClipBody( shapeIdB, shapeIdA );
+	if ( a == NULL && b == NULL )
+	{
+		return manifoldCount;
+	}
+	for ( int i = 0; i < manifoldCount; ++i )
+	{
+		b3Manifold* manifold = manifolds + i;
+		int kept = 0;
+		for ( int j = 0; j < manifold->pointCount; ++j )
+		{
+			// A speculative point is made while the surfaces are still apart, by up to the distance the body covers in
+			// the step against a mesh, and it lies midway between them (convex shapes) or on shape B (meshes and height
+			// fields). Either way it can sit in front of the plane while the surface it would push on lies in it, and a
+			// body falling into a portal would stop dead on the surface the portal is on. So each body also tests the
+			// point moved one separation toward the other shape, along the normal, which points from A to B: on or past
+			// that shape's surface.
+			const b3ManifoldPoint* mp = manifold->points + j;
+			b3Pos point = b3OffsetPos( originA, mp->anchorA );
+			b3Vec3 gap = b3MulSV( mp->separation, manifold->normal );
+			int clipped = bxIsClipped( a, point ) || bxIsClipped( a, b3OffsetPos( point, gap ) ) || bxIsClipped( b, point ) ||
+						  bxIsClipped( b, b3OffsetPos( point, b3Neg( gap ) ) );
+			if ( clipped == 0 )
+			{
+				manifold->points[kept] = manifold->points[j];
+				kept += 1;
+			}
+		}
+		manifold->pointCount = kept;
+	}
+	return manifoldCount;
+}
+
+// Continuous collision has only its time of impact point.
+static bool bxClipPreSolve( b3ShapeId shapeIdA, b3ShapeId shapeIdB, b3Pos point, b3Vec3 normal, void* context )
+{
+	(void)normal;
+	(void)context;
+	return bxIsClipped( bxClipBody( shapeIdA, shapeIdB ), point ) == 0 && bxIsClipped( bxClipBody( shapeIdB, shapeIdA ), point ) == 0;
+}
+
+/// Clips the body's contacts with a plane, see bxBody::clipPlane; enabled 0 removes it. The plane is normalized, so
+/// its normal need not be unit length. Wakes the body so its contacts are made again.
+BX_EXPORT void bx_Body_SetClipPlane( int slot, int enabled, double nx, double ny, double nz, double d, unsigned int mask )
+{
+	bxBody* body = bxGetBody( slot );
+	if ( body == NULL || b3Body_IsValid( body->id ) == false )
+	{
+		return;
+	}
+	double length = sqrt( nx * nx + ny * ny + nz * nz );
+	body->clipEnabled = enabled != 0 && length > 0.0;
+	length = length > 0.0 ? length : 1.0;
+	body->clipPlane[0] = nx / length;
+	body->clipPlane[1] = ny / length;
+	body->clipPlane[2] = nz / length;
+	body->clipPlane[3] = d / length;
+	body->clipMask = (uint64_t)mask;
+	for ( int i = 0; i < body->shapeCount; ++i )
+	{
+		if ( b3Shape_IsValid( body->shapes[i] ) )
+		{
+			b3Shape_EnablePreSolveEvents( body->shapes[i], body->clipEnabled != 0 );
+		}
+	}
+	if ( b3Body_GetType( body->id ) != b3_staticBody )
+	{
+		b3Body_SetAwake( body->id, true );
+	}
+}
+
+/// scratchF64: [enabled, nx, ny, nz, d, mask]
+BX_EXPORT void bx_Body_GetClipPlane( int slot )
+{
+	memset( s_scratchF64, 0, 6 * sizeof( double ) );
+	bxBody* body = bxGetBody( slot );
+	if ( body == NULL || b3Body_IsValid( body->id ) == false )
+	{
+		return;
+	}
+	s_scratchF64[0] = body->clipEnabled;
+	for ( int i = 0; i < 4; ++i )
+	{
+		s_scratchF64[1 + i] = body->clipPlane[i];
+	}
+	s_scratchF64[5] = (double)( body->clipMask & 0xffffffffu );
+}
+
 BX_EXPORT int bx_GetMaxWorkers( void )
 {
 	return BX_MAX_WORKERS;
@@ -639,6 +768,9 @@ BX_EXPORT int bx_CreateWorld( float gx, float gy, float gz, int workerCount )
 			}
 #endif
 			s_worlds[i] = b3CreateWorld( &def );
+			// both only run for shapes with pre-solve events, which only clip planes turn on
+			b3World_SetManifoldCallback( s_worlds[i], bxClipManifolds, NULL );
+			b3World_SetPreSolveCallback( s_worlds[i], bxClipPreSolve, NULL );
 			return i + 1;
 		}
 	}
@@ -2394,6 +2526,10 @@ static void bxBodyPushShape( bxBody* body, b3ShapeId shapeId, int descSlot, int 
 	body->shapeDescs[body->shapeCount] = descSlot;
 	body->geomDescs[body->shapeCount] = geomSlot;
 	body->shapeCount += 1;
+	if ( body->clipEnabled )
+	{
+		b3Shape_EnablePreSolveEvents( shapeId, true );
+	}
 	bxShapeDesc* geom = bxGetDesc( geomSlot );
 	if ( geom != NULL && ( geom->kind == bx_meshDesc || geom->kind == bx_heightFieldDesc ) )
 	{

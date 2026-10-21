@@ -114,6 +114,14 @@ export interface Box3DExports {
      * and a plastic one (1) keeps its overlap instead of pushing out. A `maxForce` of zero or less makes it rigid.
      */
     _bx_Body_SetShapeCrush(body: number, index: number, maxForce: number, plastic: number): void;
+    /**
+     * Clips the body's contacts with the plane (nx, ny, nz, d) (wasm/patches/0006), normalized: contact points where
+     * n.p + d > -2 * linearSlop, there or one separation toward the other shape, are dropped from its contacts with shapes whose category bits meet `mask`. `enabled` 0
+     * removes it. Wakes the body.
+     */
+    _bx_Body_SetClipPlane(body: number, enabled: number, nx: number, ny: number, nz: number, d: number, mask: number): void;
+    /** scratchF64: [enabled, nx, ny, nz, d, mask] */
+    _bx_Body_GetClipPlane(body: number): void;
     /** scratch: [maxForce, plastic] for the body's shape `index`, zeros when it is rigid or there is no such shape. */
     _bx_Body_GetShapeCrush(body: number, index: number): void;
     /**

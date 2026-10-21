@@ -28,6 +28,7 @@ import { type TransformNode } from "@babylonjs/core/Meshes/transformNode.js";
 import { Mesh } from "@babylonjs/core/Meshes/mesh.js";
 import { InstancedMesh } from "@babylonjs/core/Meshes/instancedMesh.js";
 import { VertexBuffer } from "@babylonjs/core/Buffers/buffer.js";
+import { Plane } from "@babylonjs/core/Maths/math.plane.js";
 import { Observable } from "@babylonjs/core/Misc/observable.js";
 import { type Nullable, type FloatArray } from "@babylonjs/core/types.js";
 
@@ -452,14 +453,14 @@ const RequiredNativeExports = [
     "_bx_Body_GetAngularDamping", "_bx_Body_GetAngularVelocity", "_bx_Body_GetGravityScale", "_bx_Body_GetLinearDamping",
     "_bx_Body_GetLinearVelocity", "_bx_Body_GetMassData", "_bx_Body_GetTransform", "_bx_Body_SetAngularDamping", "_bx_Body_SetAngularVelocity",
     "_bx_Body_SetAwake", "_bx_Body_SetEventFlags", "_bx_Body_SetGravityScale", "_bx_Body_SetLinearDamping", "_bx_Body_SetLinearVelocity",
-    "_bx_Body_SetMassDataFull", "_bx_Body_SetMotionLocks", "_bx_Body_SetShape", "_bx_Body_SetTargetTransform", "_bx_Body_SetTransform",
+    "_bx_Body_GetClipPlane", "_bx_Body_SetClipPlane", "_bx_Body_SetMassDataFull","_bx_Body_SetMotionLocks", "_bx_Body_SetShape", "_bx_Body_SetTargetTransform", "_bx_Body_SetTransform",
     "_bx_Body_SetType", "_bx_Body_SyncShapeDesc", "_bx_ComputeAlignedFrameB", "_bx_ContactEventsPtr", "_bx_CreateBody", "_bx_CreateJoint",
     "_bx_CreateWorld", "_bx_DebugIndexCount", "_bx_DebugIndicesPtr", "_bx_DebugPositionsPtr", "_bx_DestroyBody", "_bx_DestroyJoint",
     "_bx_DestroyWorld", "_bx_GetMaxWorkers", "_bx_GetRejectedSlotCount", "_bx_Joint_EnableLimit", "_bx_Joint_EnableMotor",
     "_bx_Joint_EnableSpring", "_bx_Joint_IsValid",
     "_bx_Joint_SetCollideConnected", "_bx_Joint_SetConstraintTuning", "_bx_Joint_SetLimits", "_bx_Joint_SetMaxMotorForce",
     "_bx_Joint_SetMotorSpeed", "_bx_Joint_SetSphericalMotor", "_bx_Joint_SetSphericalTarget", "_bx_Joint_SetSpring", "_bx_Joint_SetTarget",
-    "_bx_Joint_SetTwistLimits", "_bx_Joint_UpdateMotorFrame", "_bx_Joint_WakeBodies", "_bx_MoveEventsPtr", "_bx_RayHitsPtr", "_bx_Scratch",
+    "_bx_Joint_SetTwistLimits", "_bx_Joint_UpdateMotorFrame", "_bx_Joint_WakeBodies", "_bx_MoveEventsPtr", "_bx_RayHitsPtr", "_bx_Scratch", "_bx_ScratchF64",
     "_bx_SensorEventsPtr", "_bx_ShapeDesc_AddChild", "_bx_ShapeDesc_BuildDebugGeometry", "_bx_ShapeDesc_CreateBox", "_bx_ShapeDesc_CreateCapsule",
     "_bx_ShapeDesc_CreateContainer", "_bx_ShapeDesc_CreateCylinder", "_bx_ShapeDesc_CreateHeightField", "_bx_ShapeDesc_CreateHull",
     "_bx_ShapeDesc_CreateMesh", "_bx_ShapeDesc_CreateSphere", "_bx_ShapeDesc_Destroy", "_bx_ShapeDesc_GetAABB", "_bx_ShapeDesc_GetCategoryBits",
@@ -1420,6 +1421,43 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
 
     public getGravityFactor(body: PhysicsBody, instanceIndex?: number): number {
         return this._b3._bx_Body_GetGravityScale(this._getPluginReference(body, instanceIndex).slot);
+    }
+
+    /**
+     * Clips the body's collisions with a world space plane: every contact point on the plane's positive side, where
+     * `plane.signedDistanceTo(point) > 0`, is dropped, the side Babylon's own clip planes discard. So the plane that
+     * hides the part of a mesh past a portal also lets that part pass through whatever is behind the portal, while the
+     * rest of the body keeps colliding. Points within 1 cm (twice Box3D's linear slop) in front of the plane are dropped
+     * too, so a surface lying in the plane, such as the wall the portal is on, is passed through as well. Box3D
+     * extension, Havok has no equivalent.
+     *
+     * Each contact point is tested on its own, mesh and height field contacts included, inside the step: there is no
+     * callback into JavaScript. A speculative point, made while the surfaces are still apart, is also tested where it
+     * meets the other shape, so a body falling fast into a portal does not stop on the surface first. Continuous
+     * collision tests its time of impact point the same way.
+     * @param plane the plane in world space, or null to stop clipping. It is copied, so change it by calling this again.
+     * @param collideMask only contacts with shapes whose membership mask meets this one are clipped. Default all.
+     */
+    public setBodyClipPlane(body: PhysicsBody, plane: Nullable<Plane>, collideMask = 0xffffffff, instanceIndex?: number): void {
+        this._applyToBodyOrInstances(
+            body,
+            (data) =>
+                plane
+                    ? this._b3._bx_Body_SetClipPlane(data.slot, 1, plane.normal.x, plane.normal.y, plane.normal.z, plane.d, collideMask >>> 0)
+                    : this._b3._bx_Body_SetClipPlane(data.slot, 0, 0, 0, 0, 0, 0),
+            instanceIndex
+        );
+    }
+
+    /** The body's clip plane and collide mask from {@link setBodyClipPlane}, or null when it has none. */
+    public getBodyClipPlane(body: PhysicsBody, instanceIndex?: number): Nullable<{ plane: Plane; collideMask: number }> {
+        this._b3._bx_Body_GetClipPlane(this._getPluginReference(body, instanceIndex).slot);
+        const at = this._b3._bx_ScratchF64() >> 3;
+        const f64 = this._b3.HEAPF64;
+        if (!f64[at]) {
+            return null;
+        }
+        return { plane: new Plane(f64[at + 1], f64[at + 2], f64[at + 3], f64[at + 4]), collideMask: f64[at + 5] >>> 0 };
     }
 
     // ----------------------------------------------------------------------------------------

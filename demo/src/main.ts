@@ -1,6 +1,6 @@
 /* eslint-disable no-console */
 // Box3D physics showcase: npm run demo, then http://localhost:5178/?demo=pyramid
-// demo = pyramid | ragdolls | car | destruction | stack | joints | terrain | compound
+// demo = pyramid | ragdolls | car | destruction | stack | joints | terrain | compound | portal
 
 import { Engine } from "@babylonjs/core/Engines/engine";
 import { Scene } from "@babylonjs/core/scene";
@@ -34,8 +34,9 @@ import "@babylonjs/core/Culling/ray";
 import "@babylonjs/core/Lights/Shadows/shadowGeneratorSceneComponent";
 import { CanUseThreads, Ground, LoadBox3D, MakeMaterialFactory, Palette, type IDemoContext } from "./common";
 import { BuildCar, BuildDestruction, BuildPyramid, BuildRagdolls } from "./showcase";
+import { BuildPortal } from "./portal";
 
-const Demos = ["pyramid", "ragdolls", "car", "destruction", "stack", "joints", "terrain", "compound"] as const;
+const Demos = ["pyramid", "ragdolls", "car", "destruction", "stack", "joints", "terrain", "compound", "portal"] as const;
 type Demo = (typeof Demos)[number];
 
 // ------------------------------------------------------------------------------------------------
@@ -535,6 +536,9 @@ async function Main(): Promise<void> {
             break;
         case "compound":
             BuildCompound(ctx);
+            break;
+        case "portal":
+            BuildPortal(ctx);
             break;
         default:
             BuildPyramid(ctx);
