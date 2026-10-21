@@ -1,10 +1,25 @@
 # babylon-box3d
 
+[![npm](https://img.shields.io/npm/v/babylon-box3d)](https://www.npmjs.com/package/babylon-box3d)
+[![license](https://img.shields.io/npm/l/babylon-box3d)](LICENSE)
+
 [Box3D](https://github.com/erincatto/box3d) physics for Babylon.js. Box3D is Erin Catto's 3D successor to Box2D v3:
 an MIT licensed rigid body engine with a soft step solver, continuous collision, cross platform determinism and
 SIMD. This extension ships the engine compiled to WebAssembly plus `Box3DPlugin`, an implementation of Babylon's
 physics v2 plugin interface. It supports most of the Physics V2 API, so scenes written for the Havok plugin generally
 run on it unchanged; [What is covered](#what-is-covered) lists where it differs.
+
+Live demos: https://pryme8.github.io/babylon-box3d/
+
+## Install
+
+The package is [`babylon-box3d` on npm](https://www.npmjs.com/package/babylon-box3d). It carries the plugin, its
+typings and every build of the WebAssembly engine (single threaded, threaded, double precision), so nothing else needs
+installing besides Babylon:
+
+```
+npm install babylon-box3d @babylonjs/core
+```
 
 ```ts
 import { Vector3 } from "@babylonjs/core/Maths/math.vector";
@@ -15,8 +30,8 @@ const box3d = await Box3D();
 scene.enablePhysics(new Vector3(0, -9.81, 0), new Box3DPlugin(true, box3d));
 ```
 
-Script tags (Playground, plain HTML). A complete Playground scene is in
-[the documentation page](docs/communityExtensions/box3dPhysics.md#playground):
+Script tags (Playground, plain HTML) load the same package from unpkg, no install needed. A complete Playground scene
+is in [the documentation page](docs/communityExtensions/box3dPhysics.md#playground):
 
 ```html
 <script src="https://cdn.babylonjs.com/babylon.js"></script>
@@ -36,9 +51,9 @@ Script tags (Playground, plain HTML). A complete Playground scene is in
 
 Like Havok's UMD build, this runs from plain files in a folder. Download these three and put them next to your page:
 
-- [box3d.umd.js](https://unpkg.com/babylon-box3d@0.4.0/lib/umd/box3d.umd.js), the WebAssembly loader (global `Box3D`)
-- [box3d.umd.wasm](https://unpkg.com/babylon-box3d@0.4.0/lib/umd/box3d.umd.wasm), the engine, found next to the loader
-- [babylon.box3d.min.js](https://unpkg.com/babylon-box3d@0.4.0/umd/babylon.box3d.min.js), the plugin (global `BABYLONBOX3D`)
+- [box3d.umd.js](https://unpkg.com/babylon-box3d@0.8.0/lib/umd/box3d.umd.js), the WebAssembly loader (global `Box3D`)
+- [box3d.umd.wasm](https://unpkg.com/babylon-box3d@0.8.0/lib/umd/box3d.umd.wasm), the engine, found next to the loader
+- [babylon.box3d.min.js](https://unpkg.com/babylon-box3d@0.8.0/umd/babylon.box3d.min.js), the plugin (global `BABYLONBOX3D`)
 
 Then load them after `babylon.js` with the same three script tags as above, pointing at the local files. The folder
 has to be opened through a web server rather than by double clicking the page: browsers refuse to load a `.wasm` from
