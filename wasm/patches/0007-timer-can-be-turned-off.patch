@@ -1,0 +1,157 @@
+diff --git a/include/box3d/constants.h b/include/box3d/constants.h
+index 855d018..00a2a00 100644
+--- a/include/box3d/constants.h
++++ b/include/box3d/constants.h
+@@ -20,6 +20,16 @@ B3_API void b3SetStallThreshold( float seconds );
+ /// Get the threshold for logging stalls.
+ B3_API float b3GetStallThreshold( void );
+ 
++/// Turn Box3D's clock on or off, for every world. It is on by default. Off, b3GetTicks and the
++/// b3GetMilliseconds functions read no clock and return zero, so a world's profile reads zero, no
++/// stall is logged, and a step makes no system calls for the time (in WebAssembly each is a call
++/// out of the module). The simulation never reads the clock, so it steps the same either way.
++/// Change it only between steps: the threads a step runs on read it.
++B3_API void b3EnableTimer( bool flag );
++
++/// Is Box3D's clock on?
++B3_API bool b3IsTimerEnabled( void );
++
+ // Used to detect bad values. In float mode positions greater than about 16km have precision
+ // problems, so 100km is a safe limit. Large world mode keeps coordinates accurate much farther
+ // from the origin, so the sanity limit widens to keep valid far-field positions from tripping it.
+diff --git a/src/timer.c b/src/timer.c
+index f779e3b..cb5c61b 100644
+--- a/src/timer.c
++++ b/src/timer.c
+@@ -10,6 +10,7 @@
+ #include "core.h"
+ 
+ #include "box3d/base.h"
++#include "box3d/constants.h"
+ 
+ #include <stddef.h>
+ #include <stdio.h>
+@@ -17,6 +18,18 @@
+ 
+ #define NAME_LENGTH 16
+ 
++static bool b3_timerEnabled = true;
++
++void b3EnableTimer( bool flag )
++{
++	b3_timerEnabled = flag;
++}
++
++bool b3IsTimerEnabled( void )
++{
++	return b3_timerEnabled;
++}
++
+ #if defined( _WIN32 )
+ 
+ #ifndef WIN32_LEAN_AND_MEAN
+@@ -31,6 +44,11 @@ static double s_invFrequency = 0.0;
+ 
+ uint64_t b3GetTicks( void )
+ {
++	if ( b3_timerEnabled == false )
++	{
++		return 0;
++	}
++
+ 	LARGE_INTEGER counter;
+ 	QueryPerformanceCounter( &counter );
+ 	return (uint64_t)counter.QuadPart;
+@@ -38,6 +56,11 @@ uint64_t b3GetTicks( void )
+ 
+ float b3GetMilliseconds( uint64_t ticks )
+ {
++	if ( b3_timerEnabled == false )
++	{
++		return 0.0f;
++	}
++
+ 	if ( s_invFrequency == 0.0 )
+ 	{
+ 		LARGE_INTEGER frequency;
+@@ -56,6 +79,11 @@ float b3GetMilliseconds( uint64_t ticks )
+ 
+ float b3GetMillisecondsAndReset( uint64_t* ticks )
+ {
++	if ( b3_timerEnabled == false )
++	{
++		return 0.0f;
++	}
++
+ 	if ( s_invFrequency == 0.0 )
+ 	{
+ 		LARGE_INTEGER frequency;
+@@ -232,6 +260,11 @@ void b3JoinThread( b3Thread* t )
+ 
+ uint64_t b3GetTicks( void )
+ {
++	if ( b3_timerEnabled == false )
++	{
++		return 0;
++	}
++
+ 	struct timespec ts;
+ 	clock_gettime( CLOCK_MONOTONIC, &ts );
+ 	return ts.tv_sec * 1000000000LL + ts.tv_nsec;
+@@ -239,12 +272,22 @@ uint64_t b3GetTicks( void )
+ 
+ float b3GetMilliseconds( uint64_t ticks )
+ {
++	if ( b3_timerEnabled == false )
++	{
++		return 0.0f;
++	}
++
+ 	uint64_t ticksNow = b3GetTicks();
+ 	return (float)( ( ticksNow - ticks ) / 1000000.0 );
+ }
+ 
+ float b3GetMillisecondsAndReset( uint64_t* ticks )
+ {
++	if ( b3_timerEnabled == false )
++	{
++		return 0.0f;
++	}
++
+ 	uint64_t ticksNow = b3GetTicks();
+ 	float ms = (float)( ( ticksNow - *ticks ) / 1000000.0 );
+ 	*ticks = ticksNow;
+@@ -393,11 +436,21 @@ static double s_invFrequency = 0.0;
+ 
+ uint64_t b3GetTicks( void )
+ {
++	if ( b3_timerEnabled == false )
++	{
++		return 0;
++	}
++
+ 	return mach_absolute_time();
+ }
+ 
+ float b3GetMilliseconds( uint64_t ticks )
+ {
++	if ( b3_timerEnabled == false )
++	{
++		return 0.0f;
++	}
++
+ 	if ( s_invFrequency == 0 )
+ 	{
+ 		mach_timebase_info_data_t timebase;
+@@ -413,6 +466,11 @@ float b3GetMilliseconds( uint64_t ticks )
+ 
+ float b3GetMillisecondsAndReset( uint64_t* ticks )
+ {
++	if ( b3_timerEnabled == false )
++	{
++		return 0.0f;
++	}
++
+ 	if ( s_invFrequency == 0 )
+ 	{
+ 		mach_timebase_info_data_t timebase;

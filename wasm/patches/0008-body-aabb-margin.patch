@@ -1,0 +1,193 @@
+diff --git a/include/box3d/box3d.h b/include/box3d/box3d.h
+index 0964214..3e14317 100644
+--- a/include/box3d/box3d.h
++++ b/include/box3d/box3d.h
+@@ -726,6 +726,16 @@ B3_API void b3Body_EnableContinuous( b3BodyId bodyId, bool flag );
+ /// Is continuous collision enabled for this body?
+ B3_API bool b3Body_IsContinuousEnabled( b3BodyId bodyId );
+ 
++/// Set how far each of this body's shapes may move past its bounds before the broad phase moves its proxy (the
++/// margin of its fat AABB), in meters. Zero, the default, leaves each shape its own: an eighth of its extent, at most
++/// B3_MAX_AABB_MARGIN. A fast body made of many small shapes leaves every shape's bounds every step, and each proxy
++/// moved queries the trees again; a wider margin moves them seldom, at the cost of pairs found sooner. A shape's fat
++/// AABB takes the new margin the next time the shape leaves it.
++B3_API void b3Body_SetAabbMargin( b3BodyId bodyId, float margin );
++
++/// The fat AABB margin this body gives its shapes, or zero for each shape's own.
++B3_API float b3Body_GetAabbMargin( b3BodyId bodyId );
++
+ /// Allow this body to rotate fast. Useful for axially symmetric bodies, such as vehicle wheels.
+ /// Normally rotation speed is clamped to improve CCD. However, this clamping is unnecessary for
+ /// bodies that only rotate fast around an axis of symmetry.
+diff --git a/src/body.c b/src/body.c
+index 5688c9b..2bbb378 100644
+--- a/src/body.c
++++ b/src/body.c
+@@ -281,6 +281,7 @@ b3BodyId b3CreateBody( b3WorldId worldId, const b3BodyDef* def )
+ 	body->bodyMoveIndex = B3_NULL_INDEX;
+ 	body->id = bodyId;
+ 	body->sleepThreshold = def->sleepThreshold;
++	body->aabbMargin = 0.0f;
+ 	body->sleepTime = 0.0f;
+ 	body->sleepVelocity = 0.0f;
+ 	body->mass = 0.0f;
+@@ -2405,6 +2406,37 @@ void b3Body_EnableContinuous( b3BodyId bodyId, bool flag )
+ 	}
+ }
+ 
++void b3Body_SetAabbMargin( b3BodyId bodyId, float margin )
++{
++	B3_ASSERT( b3IsValidFloat( margin ) && margin >= 0.0f );
++
++	b3World* world = b3GetUnlockedWorld( bodyId.world0 );
++	if ( world == NULL )
++	{
++		return;
++	}
++
++	B3_REC( world, BodySetAabbMargin, bodyId, margin );
++
++	b3Body* body = b3GetBodyFullId( world, bodyId );
++	body->aabbMargin = margin;
++
++	int shapeId = body->headShapeId;
++	while ( shapeId != B3_NULL_INDEX )
++	{
++		b3Shape* shape = b3Array_Get( world->shapes, shapeId );
++		shape->aabbMargin = b3ComputeShapeMargin( world, shape );
++		shapeId = shape->nextShapeId;
++	}
++}
++
++float b3Body_GetAabbMargin( b3BodyId bodyId )
++{
++	b3World* world = b3GetWorld( bodyId.world0 );
++	b3Body* body = b3GetBodyFullId( world, bodyId );
++	return body->aabbMargin;
++}
++
+ bool b3Body_IsContinuousEnabled( b3BodyId bodyId )
+ {
+ 	b3World* world = b3GetWorld( bodyId.world0 );
+diff --git a/src/body.h b/src/body.h
+index fb5af42..5c37fd5 100644
+--- a/src/body.h
++++ b/src/body.h
+@@ -110,6 +110,9 @@ typedef struct b3Body
+ 
+ 	float sleepThreshold;
+ 	float sleepTime;
++
++	// The fat AABB margin of this body's shapes (b3Body_SetAabbMargin), or zero for each shape's own.
++	float aabbMargin;
+ 	float sleepVelocity;
+ 	float mass;
+ 
+diff --git a/src/recording_ops.inl b/src/recording_ops.inl
+index a0b3635..81d9881 100644
+--- a/src/recording_ops.inl
++++ b/src/recording_ops.inl
+@@ -70,6 +70,7 @@ B3_REC_OP( 0x38, BodyEnableContactRecycling, RET_NONE, ARG( BODYID, body ) ARG(
+ B3_REC_OP( 0x39, BodyEnableHitEvents, RET_NONE, ARG( BODYID, body ) ARG( BOOL, flag ) )
+ B3_REC_OP( 0x3A, BodyAllowFastRotation, RET_NONE, ARG( BODYID, body ) ARG( BOOL, flag ) )
+ B3_REC_OP( 0x3B, BodyEnableContinuous, RET_NONE, ARG( BODYID, body ) ARG( BOOL, flag ) )
++B3_REC_OP( 0x3C, BodySetAabbMargin, RET_NONE, ARG( BODYID, body ) ARG( F32, margin ) )
+ 
+ // Shape create/destroy
+ B3_REC_OP( 0x40, CreateSphereShape, RET_SHAPEID, ARG( BODYID, body ) ARG( SHAPEDEF, def ) ARG( SPHERE, sphere ) )
+diff --git a/src/recording_replay.c b/src/recording_replay.c
+index 8da719d..1b19d6d 100644
+--- a/src/recording_replay.c
++++ b/src/recording_replay.c
+@@ -969,6 +969,11 @@ static void b3RecDispatch_BodyEnableContinuous( const b3RecArgs_BodyEnableContin
+ 	b3Body_EnableContinuous( b3RecMakeBodyId( rdr, a->body ), a->flag );
+ }
+ 
++static void b3RecDispatch_BodySetAabbMargin( const b3RecArgs_BodySetAabbMargin* a, b3RecReader* rdr )
++{
++	b3Body_SetAabbMargin( b3RecMakeBodyId( rdr, a->body ), a->margin );
++}
++
+ static void b3RecDispatch_BodyEnableContactRecycling( const b3RecArgs_BodyEnableContactRecycling* a, b3RecReader* rdr )
+ {
+ 	b3Body_EnableContactRecycling( b3RecMakeBodyId( rdr, a->body ), a->flag );
+diff --git a/src/shape.c b/src/shape.c
+index 62637ed..f9b6d88 100644
+--- a/src/shape.c
++++ b/src/shape.c
+@@ -25,8 +25,15 @@ static b3Shape* b3GetShape( b3World* world, b3ShapeId shapeId )
+ 	return shape;
+ }
+ 
+-static float b3ComputeShapeMargin( b3Shape* shape )
++float b3ComputeShapeMargin( b3World* world, b3Shape* shape )
+ {
++	// the body's own margin for all its shapes, where it sets one (b3Body_SetAabbMargin)
++	b3Body* body = b3Array_Get( world->bodies, shape->bodyId );
++	if ( body->aabbMargin > 0.0f )
++	{
++		return body->aabbMargin;
++	}
++
+ 	float margin = 0.0f;
+ 
+ 	switch ( shape->type )
+@@ -188,7 +195,7 @@ static b3Shape* b3CreateShapeInternal( b3World* world, b3Body* body, b3WorldTran
+ 	shape->flags |= def->enableSpeculativeContact ? b3_enableSpeculative : 0;
+ 	shape->proxyKey = B3_NULL_INDEX;
+ 	shape->localCentroid = b3GetShapeCentroid( shape );
+-	shape->aabbMargin = b3ComputeShapeMargin( shape );
++	shape->aabbMargin = b3ComputeShapeMargin( world, shape );
+ 	shape->aabb = (b3AABB){ b3Vec3_zero, b3Vec3_zero };
+ 	shape->fatAABB = (b3AABB){ b3Vec3_zero, b3Vec3_zero };
+ 	shape->nameId = b3AddName( &world->names, def->name );
+@@ -1663,7 +1670,7 @@ void b3Shape_SetSphere( b3ShapeId shapeId, const b3Sphere* sphere )
+ 
+ 	shape->sphere = *sphere;
+ 	shape->type = b3_sphereShape;
+-	shape->aabbMargin = b3ComputeShapeMargin( shape );
++	shape->aabbMargin = b3ComputeShapeMargin( world, shape );
+ 
+ 	// need to wake bodies so they can react to the shape change
+ 	bool wakeBodies = true;
+@@ -1691,7 +1698,7 @@ void b3Shape_SetCapsule( b3ShapeId shapeId, const b3Capsule* capsule )
+ 
+ 	shape->capsule = *capsule;
+ 	shape->type = b3_capsuleShape;
+-	shape->aabbMargin = b3ComputeShapeMargin( shape );
++	shape->aabbMargin = b3ComputeShapeMargin( world, shape );
+ 
+ 	// need to wake bodies so they can react to the shape change
+ 	bool wakeBodies = true;
+@@ -1740,7 +1747,7 @@ void b3Shape_SetHull( b3ShapeId shapeId, const b3HullData* hull )
+ 
+ 	shape->hull = data;
+ 	shape->type = b3_hullShape;
+-	shape->aabbMargin = b3ComputeShapeMargin( shape );
++	shape->aabbMargin = b3ComputeShapeMargin( world, shape );
+ 
+ 	// need to wake bodies so they can react to the shape change
+ 	bool wakeBodies = true;
+@@ -1777,7 +1784,7 @@ void b3Shape_SetMesh( b3ShapeId shapeId, const b3MeshData* meshData, b3Vec3 scal
+ 	shape->mesh.data = meshData;
+ 	shape->mesh.scale = b3SafeScale( scale );
+ 	shape->type = b3_meshShape;
+-	shape->aabbMargin = b3ComputeShapeMargin( shape );
++	shape->aabbMargin = b3ComputeShapeMargin( world, shape );
+ 
+ 	// need to wake bodies so they can react to the shape change
+ 	bool wakeBodies = true;
+diff --git a/src/shape.h b/src/shape.h
+index 4b48c01..86b26b8 100644
+--- a/src/shape.h
++++ b/src/shape.h
+@@ -90,6 +90,9 @@ void b3DestroyShapeProxy( b3Shape* shape, b3BroadPhase* bp );
+ 
+ void b3DestroyShapeAllocations( b3World* world, b3Shape* shape );
+ 
++// A shape's fat AABB margin: its body's, where the body sets one (b3Body_SetAabbMargin), else from its extent.
++float b3ComputeShapeMargin( b3World* world, b3Shape* shape );
++
+ b3MassData b3ComputeShapeMass( const b3Shape* shape );
+ b3ShapeExtent b3ComputeShapeExtent( const b3Shape* shape, b3Vec3 localCenter );
+ 

@@ -57,6 +57,9 @@ export interface Box3DExports {
     _bx_World_GetMaximumLinearSpeed(world: number): number;
     _bx_World_EnableSleeping(world: number, flag: number): void;
     _bx_World_EnableContinuous(world: number, flag: number): void;
+    /** Box3D's clock while this world steps (wasm/patches/0007), on by default: off, a step reads no clock and the stats' timings are 0. */
+    _bx_World_EnableTimer(world: number, flag: number): void;
+    _bx_World_IsTimerEnabled(world: number): number;
     _bx_World_SetContactTuning(world: number, hertz: number, dampingRatio: number, contactSpeed: number): void;
     _bx_World_Explode(world: number, px: number, py: number, pz: number, radius: number, falloff: number, impulsePerArea: number): void;
     _bx_World_GetAwakeBodyCount(world: number): number;
@@ -109,6 +112,9 @@ export interface Box3DExports {
     /** Continuous collision for this body alone, on by default; the world's switch still applies. */
     _bx_Body_EnableContinuous(body: number, flag: number): void;
     _bx_Body_IsContinuousEnabled(body: number): number;
+    /** The fat AABB margin of the body's shapes, m (wasm/patches/0008): 0, the default, leaves each shape its own. */
+    _bx_Body_SetAabbMargin(body: number, margin: number): void;
+    _bx_Body_GetAabbMargin(body: number): number;
     /**
      * Crushable contacts for the body's shape `index`: each of its contacts pushes with at most `maxForce` newtons,
      * and a plastic one (1) keeps its overlap instead of pushing out. A `maxForce` of zero or less makes it rigid.

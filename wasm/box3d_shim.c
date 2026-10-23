@@ -126,6 +126,8 @@ static void bxFloatBuffer_Reserve( bxFloatBuffer* buf, int count )
 
 #define BX_MAX_WORLDS 8
 static b3WorldId s_worlds[BX_MAX_WORLDS];
+// the worlds whose steps leave Box3D's clock off (bx_World_EnableTimer); zero, the default, is on
+static int s_timerOff[BX_MAX_WORLDS];
 
 // Height fields have no local transform in box3d, so an offset height field is placed on a static
 // helper body that shares the Babylon body's slot.
@@ -771,6 +773,7 @@ BX_EXPORT int bx_CreateWorld( float gx, float gy, float gz, int workerCount )
 			// both only run for shapes with pre-solve events, which only clip planes turn on
 			b3World_SetManifoldCallback( s_worlds[i], bxClipManifolds, NULL );
 			b3World_SetPreSolveCallback( s_worlds[i], bxClipPreSolve, NULL );
+			s_timerOff[i] = 0;
 			return i + 1;
 		}
 	}
@@ -819,7 +822,27 @@ BX_EXPORT void bx_World_Step( int w, float dt, int subSteps )
 #ifdef __EMSCRIPTEN_PTHREADS__
 	bxResetTasks();
 #endif
+	// Box3D's clock is one switch for every world, so each world's step sets it for itself and puts it back after
+	b3EnableTimer( s_timerOff[w - 1] == 0 );
 	b3World_Step( worldId, dt, subSteps );
+	b3EnableTimer( true );
+}
+
+/// Turns Box3D's clock on or off for this world's steps (b3EnableTimer, wasm/patches/0007). It is on by default. A step
+/// reads the clock dozens of times, only to time itself for the profile and the stall logs, and in JavaScript each read
+/// is a call out of the module that allocates. Off, a step reads no clock and the timings bx_World_GetStats reports are
+/// zero; the world steps the same, bit for bit, either way.
+BX_EXPORT void bx_World_EnableTimer( int w, int flag )
+{
+	if ( B3_IS_NON_NULL( bxGetWorld( w ) ) )
+	{
+		s_timerOff[w - 1] = flag == 0;
+	}
+}
+
+BX_EXPORT int bx_World_IsTimerEnabled( int w )
+{
+	return B3_IS_NON_NULL( bxGetWorld( w ) ) && s_timerOff[w - 1] == 0;
 }
 
 BX_EXPORT void bx_World_SetGravity( int w, float gx, float gy, float gz )
@@ -1463,6 +1486,22 @@ BX_EXPORT int bx_Body_IsContinuousEnabled( int slot )
 {
 	BX_BODY_RET( slot, 0 );
 	return b3Body_IsContinuousEnabled( body->id ) ? 1 : 0;
+}
+
+// The fat AABB margin of the body's shapes (wasm/patches/0008), m: how far each may move past its bounds before the
+// broad phase moves its proxy. Zero, the default, leaves each shape its own, an eighth of its extent up to 5 cm. A fast
+// body of many small shapes moves every proxy every step at the default; a wider margin moves them seldom, and finds
+// pairs sooner. The world steps the same either way: a pair touches only when its shapes do.
+BX_EXPORT void bx_Body_SetAabbMargin( int slot, float margin )
+{
+	BX_BODY( slot );
+	b3Body_SetAabbMargin( body->id, margin > 0.0f ? margin : 0.0f );
+}
+
+BX_EXPORT float bx_Body_GetAabbMargin( int slot )
+{
+	BX_BODY_RET( slot, 0.0f );
+	return b3Body_GetAabbMargin( body->id );
 }
 
 // Crushable contacts for the body's shape i (wasm/patches/0003): each of its contacts pushes with at most maxForce
