@@ -1,8 +1,8 @@
 diff --git a/include/box3d/box3d.h b/include/box3d/box3d.h
-index 6a78a56..a7d9c1a 100644
+index 0e48313..3d99716 100644
 --- a/include/box3d/box3d.h
 +++ b/include/box3d/box3d.h
-@@ -165,6 +165,9 @@ B3_API void b3World_SetCustomFilterCallback( b3WorldId worldId, b3CustomFilterFc
+@@ -193,6 +193,9 @@ B3_API void b3World_SetCustomFilterCallback( b3WorldId worldId, b3CustomFilterFc
  /// Register the pre-solve callback. This is optional.
  B3_API void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* context );
  
@@ -13,12 +13,12 @@ index 6a78a56..a7d9c1a 100644
  /// is left as a decision for the application. Usually in m/s^2.
  /// @see b3WorldDef
 diff --git a/include/box3d/types.h b/include/box3d/types.h
-index 19850d2..db0cf53 100644
+index a0b9c1e..950d7d5 100644
 --- a/include/box3d/types.h
 +++ b/include/box3d/types.h
-@@ -88,6 +88,23 @@ typedef bool b3CustomFilterFcn( b3ShapeId shapeIdA, b3ShapeId shapeIdB, void* co
- /// @ingroup world
- typedef bool b3PreSolveFcn( b3ShapeId shapeIdA, b3ShapeId shapeIdB, b3Pos point, b3Vec3 normal, void* context );
+@@ -96,6 +96,23 @@ typedef bool b3CustomFilterFcn( b3ShapeId shapeIdA, b3ShapeId shapeIdB, void* co
+ typedef bool b3PreSolveFcn( b3ShapeId shapeIdA, b3ShapeId shapeIdB, b3Pos point, b3Vec3 normal,
+ 							void* context );
  
 +typedef struct b3Manifold b3Manifold;
 +
@@ -41,10 +41,10 @@ index 19850d2..db0cf53 100644
  /// Called for each shape found in the query.
  /// @see b3World_OverlapAABB
 diff --git a/src/contact.c b/src/contact.c
-index 73a363f..84fa8c4 100644
+index b71affa..60e0e49 100644
 --- a/src/contact.c
 +++ b/src/contact.c
-@@ -698,7 +698,7 @@ static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* c
+@@ -702,7 +702,7 @@ static bool b3UpdateConvexContact( b3World* world, int workerIndex, b3Contact* c
  	b3Vec3 tangentVelocityB = b3RotateVector( xfB.q, materialB->tangentVelocity );
  	contact->tangentVelocity = b3Sub( tangentVelocityA, tangentVelocityB );
  
@@ -53,7 +53,7 @@ index 73a363f..84fa8c4 100644
  	{
  		b3ShapeId shapeIdA = { shapeA->id + 1, world->worldId, shapeA->generation };
  		b3ShapeId shapeIdB = { shapeB->id + 1, world->worldId, shapeB->generation };
-@@ -860,6 +860,43 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
+@@ -867,6 +867,43 @@ bool b3UpdateContact( b3World* world, int workerIndex, b3Contact* contact, b3Sha
  		touching = b3UpdateConvexContact( world, workerIndex, contact, shapeA, xfA, shapeB, xfB, flip, arena );
  	}
  
@@ -98,23 +98,23 @@ index 73a363f..84fa8c4 100644
  	{
  		b3Vec3 centerA = b3RotateVector( xfA.q, localCenterA );
 diff --git a/src/physics_world.c b/src/physics_world.c
-index e456590..0173d4b 100644
+index ce86343..77bf31a 100644
 --- a/src/physics_world.c
 +++ b/src/physics_world.c
-@@ -653,7 +653,11 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
+@@ -654,7 +654,11 @@ static void b3CollideTask( int startIndex, int endIndex, int workerIndex, void*
  		// Contact recycling optimization. Please cite this library if you use this optimization.
  		// This is inspired by persistent contact manifolds used in some physics engines, such as PhysX.
  		// However, this allows larger relative motion and has fewer tuning parameters (just one).
--		if ( ( isFast == false || isMeshContact == false ) && recycleDistance > 0.0f &&
+-		if ( isFast == false && recycleDistance > 0.0f && ( contact->flags & b3_relativeTransformValid ) &&
 +		// a manifold callback has to see every step's manifolds, so its contacts are not recycled
 +		bool filtered = world->manifoldFcn != NULL &&
 +						( ( shapeA->flags & b3_enablePreSolveEvents ) || ( shapeB->flags & b3_enablePreSolveEvents ) );
 +
-+		if ( filtered == false && ( isFast == false || isMeshContact == false ) && recycleDistance > 0.0f &&
- 			 ( contact->flags & b3_relativeTransformValid ) && ( contact->flags & b3_contactRecycleFlag ) )
++		if ( filtered == false && isFast == false && recycleDistance > 0.0f && ( contact->flags & b3_relativeTransformValid ) &&
+ 			 ( contact->flags & b3_contactRecycleFlag ) )
  		{
  			// The scalar part of b3InvMulQuat is just the quaternion dot product.
-@@ -3315,6 +3319,17 @@ void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* c
+@@ -3434,6 +3438,17 @@ void b3World_SetPreSolveCallback( b3WorldId worldId, b3PreSolveFcn* fcn, void* c
  	world->preSolveContext = context;
  }
  
@@ -133,10 +133,10 @@ index e456590..0173d4b 100644
  {
  	b3World* world = b3GetWorldFromId( worldId );
 diff --git a/src/physics_world.h b/src/physics_world.h
-index 8bd3df8..89facc1 100644
+index 1436ee4..7583f9c 100644
 --- a/src/physics_world.h
 +++ b/src/physics_world.h
-@@ -249,6 +249,9 @@ typedef struct b3World
+@@ -259,6 +259,9 @@ typedef struct b3World
  	b3PreSolveFcn* preSolveFcn;
  	void* preSolveContext;
  

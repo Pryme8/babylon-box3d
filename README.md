@@ -305,8 +305,14 @@ joint above.
 `SIMULATION_CONTROLLED` hands it back to the solver, asleep until something wakes it.
 
 Box3D extras on the plugin: `explode`, `createWheelJoint` (suspension, steering, spin motor), `createParallelJoint`,
-`setShapeFilterGroup`, `setShapeRollingResistance`, `setAllowFastRotation`, `setBodyClipPlane`, `getStats`.
-`PhysicsCharacterController` is not supported yet, it depends on Havok internals.
+`setShapeFilterGroup`, `setShapeRollingResistance`, `setAllowFastRotation`, `setBodyClipPlane`, `getStats`, and
+from Box3D's newer solver `setRestitutionIterations` (restitution passes after the solve, 2 by default),
+`setRestitutionPropagationEnabled` (those passes also solve the contacts without restitution, so a bounce carries
+through a stack), `setIsotropicInertiaTolerance` (how far from a sphere a body's inertia may be before its gyroscopic
+torque is integrated) and `setBodySafetyFactor` (how far a body may move in a step, as a fraction of its smallest
+shape, before continuous collision sweeps it). `onBeforeWorldStepObservable` is notified with the step's time right
+before each world step. Babylon's `PhysicsCharacterController` runs on Havok internals and is not supported;
+[Character movers](#character-movers) are Box3D's own.
 
 **Clip planes (portals).** `plugin.setBodyClipPlane(body, plane, collideMask?)` drops every contact point of the body
 on the plane's positive side, the side Babylon's own clip planes hide, so the plane that hides the part of a mesh gone
@@ -345,9 +351,12 @@ their velocity turned once their centre crosses, and the rim built from boxes on
 | `bx_Body_SetFeatureKey`, `bx_Body_GetFeatureKey`, `bx_Body_GetShapeFeatureKey` | canonical pairs, see [Patches to Box3D](#patches-to-box3d): a body's key (1 to 2^44 - 1, as a double) gives each of its shapes the key `(key << 20) \| index`, by which new contacts are made, continuous collision sweeps, and a closest ray or shape cast breaks a tie (then by body slot and shape index) |
 | `bx_ShapeDesc_GetGeometryBytes`, `bx_ShapeDesc_GetGeometryByteCount`, `bx_ShapeDesc_CreateMeshFromBytes`, `bx_ShapeDesc_CreateHeightFieldFromBytes` | a mesh's or height field's data as bytes, and a description made from a copy of them. Box3D keeps either as one block addressed by offsets, with no pointer in it, so an instance with no world (a worker's) can build the geometry and another instance of the same build copies the block in as it is: nothing in it needs fixing up. The import checks the version, the byte count and that every array lies inside the block, and costs a copy |
 | `bx_IsDoublePrecision`, `bx_ScratchF64`, `bx_RayHitPointsF64Ptr`, `bx_BodyContactPointsF64Ptr` | positions in doubles, see [Double precision](#double-precision) |
-| `bx_ShapeDesc_SetInvokeContactCreation`, `bx_ShapeDesc_GetInvokeContactCreation`, `bx_World_GetStackUsed` | Box3D's `invokeContactCreation` per description, on by default. Off, a static shape never enters the broad phase's move buffer: the first step reserves no pair slots for it (486 bytes a static, which the step stack then keeps for good) and it is paired when a moving shape finds it, so a static made late pairs on the same step as one made at the start. Off on a container, it is off for every shape made from its children. `bx_World_GetStackUsed` says the most the step stack has held |
+| `bx_ShapeDesc_SetInvokeContactCreation`, `bx_ShapeDesc_GetInvokeContactCreation`, `bx_World_GetStackUsed` | Box3D's `invokeContactCreation` per description, on by default. Off, a static shape is not marked as moved in the broad phase's static tree, so the first step does not pair the dynamic tree against it: it is paired when a moving shape finds it, so a static made late pairs on the same step as one made at the start. Off on a container, it is off for every shape made from its children. `bx_World_GetStackUsed` says the most the step stack has held |
 | `bx_World_EnableTimer`, `bx_World_IsTimerEnabled` | Box3D's clock for one world's steps, on by default, see [Patches to Box3D](#patches-to-box3d) |
 | `bx_Body_SetAabbMargin`, `bx_Body_GetAabbMargin` | the fat AABB margin of a body's shapes, see [Patches to Box3D](#patches-to-box3d) |
+| `bx_CreateJoint` with types 8 and 9, `bx_MoverJoint_SetLinearVelocity`, `bx_MoverJoint_SetMaxForce`, `bx_PogoJoint_Set`, `bx_PogoJoint_GetState`, `bx_Joint_SetLocalFrames` | Box3D's mover joint, which drives body B to a velocity relative to body A in the xz plane of B's frame with a limited force, and its pogo joint, a spring along a ray to the ground that sets the velocity the joint drives to and is rigid within its tension and compression limits. The dynamic mover is built from the two. Unlike Box3D's own setters, these wake the joint's bodies when a value changes |
+| `bx_World_CollideMover`, `bx_MoverPlanesPtr`, `bx_SolveMoverPlanes`, `bx_World_CastMover`, `bx_ClipMoverVector`, `bx_Body_PushFromMover` | the geometric mover's queries: the planes a capsule touches, a move solved against them, the capsule cast along it, a velocity clipped by the planes that pushed, and the impulse a capsule moving at a velocity gives a dynamic body it touches |
+| `bx_Body_GetPointVelocity`, `bx_Body_GetLocalPoint` | the velocity of a world point carried by a body, and a world point in a body's frame |
 
 Box3D creates shapes on bodies while Babylon creates shapes standalone, so a `PhysicsShape` is a description that
 is instantiated on every body it is set on. Changing its filter masks, material or density is applied to the live
@@ -356,12 +365,49 @@ data are shared and reference counted. Only bodies reported by Box3D's move even
 right handed and Babylon left handed by default; no conversion is done, the simulation runs in the mirrored frame
 and mesh winding is flipped, exactly like the Havok plugin.
 
+## Character movers
+
+Box3D's two character controllers, from its samples, are ported in [src/box3dMovers.ts](src/box3dMovers.ts). Box3D
+keeps them as samples for a game to copy and change rather than as library code. They are exported here to use as
+they are, and written the way the samples are, as plain calls into the module, so a game that wants other behaviour
+copies the file. Both stand y up on a pogo, a spring along a ray to the ground that holds the capsule above it, so
+they walk up steps without the capsule touching an edge, and both move by Quake's ground and air model.
+
+- `Box3DDynamicMover` is a rigid capsule with its rotation locked, so it collides with everything, pushes with its own
+  mass and is pushed back. A mover joint drives it to the target velocity with a limited force and a pogo joint holds
+  it up. On an animated (kinematic) body the mover joint holds to that body, so the mover rides it. It loses its grip
+  on a slope steeper than `minGroundNormalY` and slides off, and when the central ray misses, a skirt of eight more
+  rays round the capsule lets it stand on a ledge or a rail.
+- `Box3DGeometricMover` is not a body. Each update it gathers the planes its capsule touches, solves the move against
+  them, casts the capsule along the result and clips its velocity, so the game controls every bit of its motion. It
+  pushes the dynamic bodies it walks into; other bodies do not collide with it, so give it a kinematic body that
+  follows it when they should.
+
+```ts
+import { Box3DDynamicMover } from "babylon-box3d";
+
+const mover = new Box3DDynamicMover(plugin, scene, { position: new Vector3(0, 2, 0), transformNode: characterRoot });
+plugin.onBeforeWorldStepObservable.add((dt) => {
+    // forward and right: the camera's directions flattened to the ground; the throttles run from -1 to 1
+    mover.update(dt, forward, right, throttleForward, throttleRight, running ? 1.6 : 1);
+});
+window.addEventListener("keydown", (e) => e.code === "Space" && mover.jump());
+```
+
+`update` runs once per world step, before it, which is what `onBeforeWorldStepObservable` is for; a geometric mover
+can update there or once a frame. The tunings (speeds, acceleration, friction, forces, the pogo's spring and limits)
+default to Box3D's sample and are public fields. `ground`, `probes` and `planes` say what the last update found, for
+drawing or game logic. The dynamic mover owns its node's rotation, which stays identity, so turn a child to face the
+way the character walks. `?demo=character` runs either one over stairs, a ramp, a slope too steep to walk, a moving
+platform and crates ([demo/src/character.ts](demo/src/character.ts)).
+
 ## Layout
 
 | path | what |
 | --- | --- |
 | `src/box3dPlugin.ts` | the plugin (`IPhysicsEnginePluginV2`) |
-| `src/index.ts` | package entry: `Box3DPlugin`, `Box3DWheelJoint`, `Box3D` (wasm factory), `LoadBox3D` |
+| `src/index.ts` | package entry: `Box3DPlugin`, `Box3DWheelJoint`, `Box3DDynamicMover`, `Box3DGeometricMover`, `Box3D` (wasm factory), `LoadBox3D` |
+| `src/box3dMovers.ts` | Box3D's two character movers, see [Character movers](#character-movers) |
 | `src/loadBox3D.ts` | picks the single threaded or threaded wasm build for the page |
 | `wasm/box3d_shim.c` | C shim: flat, handle based API over box3d (`bx_*` functions) |
 | `wasm/build.mjs` | emcc build for `lib/esm`, `lib/umd` (global `Box3D`), `lib/node`, the threaded pair and the double precision builds |
@@ -381,7 +427,9 @@ worker; that is only needed because of the host, and an app that controls its ow
 
 Demos: `pyramid` (Box3D's Large Pyramid benchmark, thin instances, `&rows=100` for 5050 boxes, click to explode),
 `ragdolls` (Erin's human ragdoll sliding down a chute), `car` (wheel joints, WASD), `destruction` (brick tower and
-wrecking ball), plus `stack`, `joints`, `terrain`, `compound` feature tests. Add `&ui=0` to hide the overlay.
+wrecking ball), `portal` (clip planes), `character` (Box3D's character movers, WASD and space,
+`&mover=geometric` for the second one), plus `stack`, `joints`, `terrain`, `compound` feature tests. Add `&ui=0` to
+hide the overlay.
 
 ## Benchmarks
 
@@ -424,6 +472,12 @@ take back:
 - Full tables, including sleep off, p95 and max step times, are in `bench/results`. Run `npm run bench`,
   `npm run bench -- --workers 4`, or open `bench.html` from `npm run demo` and set the worker count there.
 
+The tables above were measured on Box3D 47d7f7c. The Box3D commit this release builds from, 3362633, brought a new
+broad phase and a wide SIMD contact solver, and steps the same scenes 34% to 48% faster, single threaded, sleep on
+or off. That is the engine step alone, the two builds taking turns in one process
+(`bench/compareBuilds.mjs`, `bench/results/builds-2026-10-28.md`), measured on a machine busy with other work, so
+the percentages hold and the milliseconds there do not. Every pyramid stands to the same height in both.
+
 ## Building
 
 ```
@@ -454,18 +508,18 @@ stays exactly upstream's commit, and a change to the patch set rebuilds every ob
 
 | patch | what it changes |
 | --- | --- |
-| `0001-broad-phase-prunes-by-mask.patch` | A shape that moved queries the broad phase with its own mask bits instead of every category (unless it is in a positive group, which overrides masks). A body whose shapes are filtered against each other then skips its own subtree instead of visiting every sibling shape before rejecting it. Which pairs collide does not change. |
 | `0002-continuous-per-body.patch` | `b3Body_EnableContinuous` and `b3Body_IsContinuousEnabled` (shim: `bx_Body_EnableContinuous`, `bx_Body_IsContinuousEnabled`): continuous collision switched for one body. The world's switch still applies. A body made of many small shapes is swept shape by shape whenever its smallest shape moves fast enough, which can cost more than the rest of the step. |
-| `0003-crushable-contacts.patch` | `b3Shape_SetCrushLimit(shape, maxForce, plastic)`, `b3Shape_GetCrushLimit` and `b3Shape_IsCrushPlastic` (shim: `bx_Body_SetShapeCrush(body, i, maxForce, plastic)`, `bx_Body_GetShapeCrush`): each contact of a crushable shape pushes with at most `maxForce` newtons, the smaller of its two shapes' limits, shared between its points, so a body meeting something rigid decelerates over a distance instead of stopping within a step. A plastic contact gets no push-out and no restitution, so it keeps the overlap it reaches. Crushable contacts are routed to the scalar solver path, where each point's accumulated impulse is clamped; a point still apart pushes only for the part of the substep after the surfaces meet. Rigid contacts are untouched, bit for bit. The limit may change every step, and a shape turning crushable or rigid keeps its contacts. |
+| `0003-crushable-contacts.patch` | `b3Shape_SetCrushLimit(shape, maxForce, plastic)`, `b3Shape_GetCrushLimit` and `b3Shape_IsCrushPlastic` (shim: `bx_Body_SetShapeCrush(body, i, maxForce, plastic)`, `bx_Body_GetShapeCrush`): each contact of a crushable shape pushes with at most `maxForce` newtons, the smaller of its two shapes' limits, shared between its points, so a body meeting something rigid decelerates over a distance instead of stopping within a step. A plastic contact gets no push-out and no restitution, so it keeps the overlap it reaches. Crushable contacts stay in the constraint graph's overflow color, which Box3D solves on its scalar path while colored contacts go to its wide SIMD solver, and there each point's accumulated impulse is clamped; a point still apart pushes only for the part of the substep after the surfaces meet. Rigid contacts are untouched, bit for bit. The limit may change every step, and a shape turning crushable or rigid keeps its contacts. |
 | `0004-hull-builder-fails-instead-of-spinning.patch` | `b3CreateHull` returns NULL where it used to loop forever. A flat or nearly flat point set a few metres from the origin (a crushed panel, a slab) can leave the builder's half-edge mesh inconsistent: a merge leaves two faces that share every edge and `b3HullBuilder_ConnectFaces` walks round them without end, or a face's ring stops closing and `b3NewellPlane` does. Such a call never returned and locked whatever made it. Now every walk over the mesh counts its steps against the edge pool, the merge loops count merges against the face pool, and the horizon's stack and edge list check their capacity, which only asserts guarded before. None of these limits can be reached by a consistent mesh, and a build that reaches one returns NULL (shim: `bx_ShapeDesc_CreateHull` and `bx_Body_SetShapeHull` return 0, and the plugin throws for a `CONVEX_HULL` shape). Hulls that were built before are built the same, bit for bit. |
-| `0005-canonical-pairs.patch` | `b3ShapeDef::featureKey`, `b3Shape_SetFeatureKey` and `b3Shape_GetFeatureKey` (shim: `bx_Body_SetFeatureKey`): a moved proxy's new pairs are sorted by the other shape's feature key, then child index, then shape id, before their contacts are made. Contact ids, and with them the order the solver meets contacts, came from the order the static tree gave pairs, which is a function of every insertion and removal it has seen, so the same statics in reach could collide differently depending on how and when the world was built. A moved proxy's pairs are no longer dropped past sixteen: if the step's pair slots run out, the pairs are found again with room for all of them. Continuous collision gathers its candidates, sorts them by key and sweeps them in that order, since each sweep is clipped by the ones before it. Shapes without a key fall back to their ids, so a world without keys behaves as before except where a step's new pairs came out of the tree in another order. |
+| `0005-canonical-pairs.patch` | `b3ShapeDef::featureKey`, `b3Shape_SetFeatureKey` and `b3Shape_GetFeatureKey` (shim: `bx_Body_SetFeatureKey`): a step's new pairs are sorted by the lower of their two shapes' feature keys, then the higher, then the pair key, before their contacts are made. Box3D sorts them by the pair key alone, which is made of the shape ids, so contact ids, and with them the order the solver meets contacts, follow the order the world made its shapes in, and the same shapes in reach could collide differently depending on how and when the world was built. Continuous collision gathers its candidates, sorts them by key and sweeps them in that order, since each sweep is clipped by the ones before it, where Box3D sweeps them in the order its tree gives them. Shapes without a key tie on it and fall back to the pair key, so a world without keys makes its contacts exactly as Box3D does. |
 | `0006-manifold-callback.patch` | `b3World_SetManifoldCallback(world, fcn, context)`: a `b3ManifoldFcn` called with all of a contact's manifolds after they are computed, mesh and height field contacts included, when either shape has pre-solve events on. It may remove points and manifolds and returns how many manifolds are left; a manifold left with no points is dropped and zero disables the contact for the step. Box3D's own pre-solve callback only sees the first point of the first manifold and is never called for meshes or height fields. While the callback is set it replaces the pre-solve callback for these contacts, which still runs for continuous collision, and these contacts are not recycled, so the callback sees every step. The shim uses it for clip planes (`bx_Body_SetClipPlane`); shapes without pre-solve events are untouched, bit for bit. |
 | `0007-timer-can-be-turned-off.patch` | `b3EnableTimer` and `b3IsTimerEnabled` (shim: `bx_World_EnableTimer(world, flag)` and `bx_World_IsTimerEnabled`, which set it around each of that world's steps): Box3D's clock, on by default. A step reads it dozens of times, only to time itself for the profile and to log stalls, and in WebAssembly each read is a call out to JavaScript that allocates. Off, `b3GetTicks` and the `b3GetMilliseconds` functions return zero without reading it: a step makes no call out, its timings (`getStats`) read zero and no stall is logged. Nothing in the simulation reads the clock, so a world steps the same, bit for bit, either way. |
 | `0008-body-aabb-margin.patch` | `b3Body_SetAabbMargin(body, margin)` and `b3Body_GetAabbMargin` (shim: `bx_Body_SetAabbMargin`, `bx_Body_GetAabbMargin`): how far each of a body's shapes may move past its bounds before the broad phase moves its proxy, in meters. Zero, the default, leaves each shape its own margin, an eighth of its extent up to `B3_MAX_AABB_MARGIN` (5 cm). A fast body of many small shapes, such as a car of a hundred crush chunks at 25 m/s and 480 Hz, leaves every shape's bounds every step, and each proxy moved queries the trees again and the dynamic tree is rebuilt round it: about a third of such a step. A wider margin moves the proxies seldom and finds pairs sooner. A body that touches nothing steps the same, bit for bit; one that meets something can touch a step sooner, since a shape within its speculative reach of another touches as soon as their pair is there, and at the shape's own margin the pair is found the step after its bounds reach the other's. A shape's fat AABB takes a new margin the next time the shape leaves it. |
 
-`test/wasm.patches.test.ts` covers 0001 and 0002, `test/wasm.crush.test.ts` covers 0003, `test/wasm.hulls.test.ts` covers 0004,
+`test/wasm.patches.test.ts` covers 0002 and the broad phase under masks and groups, `test/wasm.crush.test.ts` covers 0003, `test/wasm.hulls.test.ts` covers 0004,
 `test/wasm.canonicalPairs.test.ts` covers 0005, `test/wasm.clipPlane.test.ts` covers 0006, `test/wasm.timer.test.ts` covers 0007 and `test/wasm.aabbMargin.test.ts` covers 0008.
-None has been offered upstream.
+None has been offered upstream. `0001-broad-phase-prunes-by-mask.patch` went with Box3D 3362633, whose broad phase
+finds pairs tree against tree: a tree node carries no category bits, so there is nothing for a mask to prune by.
 
 **Crush accuracy.** Against a constant limit the crush depth lands within 1.5% of the continuous answer at 480 Hz
 with two substeps, and within 2% on a height field. What remains is Box3D's, not the patch's: its semi-implicit

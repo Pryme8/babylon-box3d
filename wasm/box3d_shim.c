@@ -215,8 +215,8 @@ typedef struct bxShapeDesc
 	int groupIndex;
 	float rollingResistance;
 	int isSensor;
-	// Box3D's b3ShapeDef::invokeContactCreation, on by default: a static shape made with it starts in the broad phase's
-	// move buffer and looks for its own pairs on the next step. Off, it waits to be found by a moving shape. A container
+	// Box3D's b3ShapeDef::invokeContactCreation, on by default: a static shape made with it is marked as moved in the
+	// broad phase's static tree and is paired on the next step. Off, it waits to be found by a moving shape. A container
 	// that has it off turns it off for every shape made from its children.
 	int invokeContactCreation;
 	bxChild* children;
@@ -897,6 +897,57 @@ BX_EXPORT void bx_World_SetContactTuning( int w, float hertz, float dampingRatio
 	}
 }
 
+/// How many restitution passes a step makes after the solver, [0, 63]. Box3D's default is 2; more can leave a bouncing
+/// box spinning less.
+BX_EXPORT void bx_World_SetRestitutionIterations( int w, int iterations )
+{
+	b3WorldId worldId = bxGetWorld( w );
+	if ( B3_IS_NON_NULL( worldId ) )
+	{
+		b3World_SetRestitutionIterations( worldId, iterations < 0 ? 0 : iterations );
+	}
+}
+
+BX_EXPORT int bx_World_GetRestitutionIterations( int w )
+{
+	b3WorldId worldId = bxGetWorld( w );
+	return B3_IS_NON_NULL( worldId ) ? b3World_GetRestitutionIterations( worldId ) : 0;
+}
+
+/// Restitution propagation: the restitution passes also solve the contacts without restitution, so a bounce carries
+/// on through the bodies it reaches instead of stopping at the first.
+BX_EXPORT void bx_World_EnableRestitutionPropagation( int w, int flag )
+{
+	b3WorldId worldId = bxGetWorld( w );
+	if ( B3_IS_NON_NULL( worldId ) )
+	{
+		b3World_EnableRestitutionPropagation( worldId, flag != 0 );
+	}
+}
+
+BX_EXPORT int bx_World_IsRestitutionPropagationEnabled( int w )
+{
+	b3WorldId worldId = bxGetWorld( w );
+	return B3_IS_NON_NULL( worldId ) && b3World_IsRestitutionPropagationEnabled( worldId ) ? 1 : 0;
+}
+
+/// How far from isotropic a body's inertia may be, [0, 1], before Box3D integrates its gyroscopic torque. Only bodies
+/// made or given mass after the call see a new value.
+BX_EXPORT void bx_World_SetIsotropicInertiaTolerance( int w, float tolerance )
+{
+	b3WorldId worldId = bxGetWorld( w );
+	if ( B3_IS_NON_NULL( worldId ) )
+	{
+		b3World_SetIsotropicInertiaTolerance( worldId, b3ClampFloat( tolerance, 0.0f, 1.0f ) );
+	}
+}
+
+BX_EXPORT float bx_World_GetIsotropicInertiaTolerance( int w )
+{
+	b3WorldId worldId = bxGetWorld( w );
+	return B3_IS_NON_NULL( worldId ) ? b3World_GetIsotropicInertiaTolerance( worldId ) : 0.0f;
+}
+
 BX_EXPORT void bx_World_Explode( int w, double px, double py, double pz, float radius, float falloff, float impulsePerArea )
 {
 	b3WorldId worldId = bxGetWorld( w );
@@ -1502,6 +1553,34 @@ BX_EXPORT float bx_Body_GetAabbMargin( int slot )
 {
 	BX_BODY_RET( slot, 0.0f );
 	return b3Body_GetAabbMargin( body->id );
+}
+
+// Continuous collision's safety factor: a shape is swept once it moves further in a step than this fraction of its
+// smallest extent. Smaller is safer and can hitch; Box3D's default is 0.5 and it recommends [0.01, 0.5].
+BX_EXPORT void bx_Body_SetSafetyFactor( int slot, float safetyFactor )
+{
+	BX_BODY( slot );
+	b3Body_SetSafetyFactor( body->id, safetyFactor > 0.0f ? safetyFactor : 0.0f );
+}
+
+BX_EXPORT float bx_Body_GetSafetyFactor( int slot )
+{
+	BX_BODY_RET( slot, 0.0f );
+	return b3Body_GetSafetyFactor( body->id );
+}
+
+/// The velocity of the world point (px, py, pz) moving with the body, to scratch[0..2].
+BX_EXPORT void bx_Body_GetPointVelocity( int slot, double px, double py, double pz )
+{
+	BX_BODY( slot );
+	bxWriteVec3( 0, b3Body_GetWorldPointVelocity( body->id, bxPos( px, py, pz ) ) );
+}
+
+/// The world point (px, py, pz) in the body's frame, to scratch[0..2].
+BX_EXPORT void bx_Body_GetLocalPoint( int slot, double px, double py, double pz )
+{
+	BX_BODY( slot );
+	bxWriteVec3( 0, b3Body_GetLocalPoint( body->id, bxPos( px, py, pz ) ) );
 }
 
 // Crushable contacts for the body's shape i (wasm/patches/0003): each of its contacts pushes with at most maxForce
@@ -3152,6 +3231,8 @@ typedef enum bxJointType
 	bx_filterJoint = 5,
 	bx_wheelJoint = 6,
 	bx_parallelJoint = 7,
+	bx_moverJoint = 8,
+	bx_pogoJoint = 9,
 } bxJointType;
 
 /// Frames are read from scratch: [ax, ay, az, aqx, aqy, aqz, aqw, bx, by, bz, bqx, bqy, bqz, bqw]
@@ -3159,6 +3240,9 @@ typedef enum bxJointType
 /// enableSuspensionLimit, lowerSuspension, upperSuspension, enableSpinMotor, maxSpinTorque, spinSpeed, enableSteering,
 /// steeringHertz, steeringDamping, targetSteering, maxSteeringTorque, enableSteeringLimit, lowerSteering, upperSteering.
 /// Parallel joints read [hertz, dampingRatio, maxTorque] from scratch[14..].
+/// Mover joints read the linear velocity [vx, vy, vz] from scratch[14..] and take the max force as param.
+/// Pogo joints read [nx, ny, nz, hertz, dampingRatio, restLength, maxTensionForce, maxCompressionForce, impulse,
+/// velocity] from scratch[14..]: the unit ground normal, the spring, its force limits, and the warm start.
 /// Returns the joint slot, 0 on failure.
 // Fills the shared part of a joint definition. The definition must come from its b3Default*JointDef function so every
 // field not set here keeps Box3D's default. In particular the force and torque thresholds default to FLT_MAX: a zeroed
@@ -3265,6 +3349,31 @@ BX_EXPORT int bx_CreateJoint( int w, int type, int bodyASlot, int bodyBSlot, int
 			b3FilterJointDef def = b3DefaultFilterJointDef();
 			bxFillJointBase( &def.base, bodyA, bodyB, collideConnected );
 			jointId = b3CreateFilterJoint( worldId, &def );
+			break;
+		}
+		case bx_moverJoint:
+		{
+			b3MoverJointDef def = b3DefaultMoverJointDef();
+			bxFillJointBase( &def.base, bodyA, bodyB, collideConnected );
+			def.linearVelocity = bxVec3( s_scratch[14], s_scratch[15], s_scratch[16] );
+			def.maxForce = param;
+			jointId = b3CreateMoverJoint( worldId, &def );
+			break;
+		}
+		case bx_pogoJoint:
+		{
+			b3PogoJointDef def = b3DefaultPogoJointDef();
+			bxFillJointBase( &def.base, bodyA, bodyB, collideConnected );
+			const float* p = s_scratch + 14;
+			def.normal = b3Normalize( bxVec3( p[0], p[1], p[2] ) );
+			def.hertz = p[3];
+			def.dampingRatio = p[4];
+			def.restLength = p[5];
+			def.maxTensionForce = p[6];
+			def.maxCompressionForce = p[7];
+			def.impulse = p[8];
+			def.velocity = p[9];
+			jointId = b3CreatePogoJoint( worldId, &def );
 			break;
 		}
 		default:
@@ -3692,6 +3801,91 @@ BX_EXPORT void bx_WheelJoint_SetSuspension( int slot, float hertz, float damping
 	}
 }
 
+/// Moves the joint's frames on its bodies to scratch[0..13], as bx_CreateJoint reads them.
+BX_EXPORT void bx_Joint_SetLocalFrames( int slot )
+{
+	b3JointId id = bxGetJointId( slot );
+	if ( B3_IS_NON_NULL( id ) )
+	{
+		b3Joint_SetLocalFrameA( id, bxTransform( s_scratch[0], s_scratch[1], s_scratch[2], s_scratch[3], s_scratch[4], s_scratch[5], s_scratch[6] ) );
+		b3Joint_SetLocalFrameB( id, bxTransform( s_scratch[7], s_scratch[8], s_scratch[9], s_scratch[10], s_scratch[11], s_scratch[12], s_scratch[13] ) );
+	}
+}
+
+// Box3D's mover and pogo joint setters leave sleeping bodies asleep, since its movers never sleep. A joint set up by
+// hand can be asleep, and would not answer, so the setters below wake its bodies when a value changes.
+
+/// The velocity a mover joint drives body B to, relative to body A.
+BX_EXPORT void bx_MoverJoint_SetLinearVelocity( int slot, float vx, float vy, float vz )
+{
+	b3JointId id = bxGetJointId( slot );
+	if ( B3_IS_NON_NULL( id ) && b3Joint_GetType( id ) == b3_moverJoint )
+	{
+		b3Vec3 old = b3MoverJoint_GetLinearVelocity( id );
+		if ( old.x != vx || old.y != vy || old.z != vz )
+		{
+			b3MoverJoint_SetLinearVelocity( id, bxVec3( vx, vy, vz ) );
+			b3Joint_WakeBodies( id );
+		}
+	}
+}
+
+/// The force a mover joint may use to reach its velocity, usually in newtons.
+BX_EXPORT void bx_MoverJoint_SetMaxForce( int slot, float maxForce )
+{
+	b3JointId id = bxGetJointId( slot );
+	if ( B3_IS_NON_NULL( id ) && b3Joint_GetType( id ) == b3_moverJoint && b3MoverJoint_GetMaxVelocityForce( id ) != maxForce )
+	{
+		b3MoverJoint_SetMaxVelocityForce( id, maxForce );
+		b3Joint_WakeBodies( id );
+	}
+}
+
+/// Everything a dynamic mover changes on its pogo joint each update: the unit ground normal, the spring and its force
+/// limits. The rest length too, which a crouch shortens.
+BX_EXPORT void bx_PogoJoint_Set( int slot, float nx, float ny, float nz, float hertz, float dampingRatio, float restLength,
+								 float maxTensionForce, float maxCompressionForce )
+{
+	b3JointId id = bxGetJointId( slot );
+	if ( B3_IS_NULL( id ) || b3Joint_GetType( id ) != b3_pogoJoint )
+	{
+		return;
+	}
+	b3Vec3 normal = b3Normalize( bxVec3( nx, ny, nz ) );
+	b3Vec3 oldNormal = b3PogoJoint_GetNormal( id );
+	bool changed = oldNormal.x != normal.x || oldNormal.y != normal.y || oldNormal.z != normal.z ||
+				   b3PogoJoint_GetSpringHertz( id ) != hertz || b3PogoJoint_GetSpringDampingRatio( id ) != dampingRatio ||
+				   b3PogoJoint_GetRestLength( id ) != restLength || b3PogoJoint_GetMaxTensionForce( id ) != maxTensionForce ||
+				   b3PogoJoint_GetMaxCompressionForce( id ) != maxCompressionForce;
+	if ( changed == false )
+	{
+		return;
+	}
+	b3PogoJoint_SetNormal( id, normal );
+	b3PogoJoint_SetSpringHertz( id, hertz );
+	b3PogoJoint_SetSpringDampingRatio( id, dampingRatio );
+	b3PogoJoint_SetRestLength( id, restLength );
+	b3PogoJoint_SetMaxTensionForce( id, maxTensionForce );
+	b3PogoJoint_SetMaxCompressionForce( id, maxCompressionForce );
+	b3Joint_WakeBodies( id );
+}
+
+/// A pogo joint's [currentLength, currentSpeed, impulse] to scratch[0..2], the state a new pogo joint warm starts from.
+BX_EXPORT void bx_PogoJoint_GetState( int slot )
+{
+	b3JointId id = bxGetJointId( slot );
+	if ( B3_IS_NULL( id ) || b3Joint_GetType( id ) != b3_pogoJoint )
+	{
+		s_scratch[0] = 0.0f;
+		s_scratch[1] = 0.0f;
+		s_scratch[2] = 0.0f;
+		return;
+	}
+	s_scratch[0] = b3PogoJoint_GetCurrentLength( id );
+	s_scratch[1] = b3PogoJoint_GetCurrentSpeed( id );
+	s_scratch[2] = b3PogoJoint_GetImpulse( id );
+}
+
 // ---------------------------------------------------------------------------------------------
 // Ray casts
 // ---------------------------------------------------------------------------------------------
@@ -3982,6 +4176,194 @@ BX_EXPORT int bx_World_OverlapShape( int w, double ox, double oy, double oz, con
 	b3ShapeProxy proxy = { (const b3Vec3*)points, count, radius };
 	b3World_OverlapShape( worldId, bxPos( ox, oy, oz ), &proxy, filter, bxOverlapCallback, &ctx );
 	return ctx.count;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Character movers
+// ---------------------------------------------------------------------------------------------
+
+// A geometric mover is a capsule moved by casting and by solving collision planes, Box3D's b3World_CollideMover,
+// b3SolvePlanes, b3World_CastMover and b3ClipVector. The planes live here between those calls so a mover update
+// marshals nothing, and JavaScript reads or softens them through bx_MoverPlanesPtr().
+#define BX_MOVER_PLANE_CAPACITY 16
+#define BX_MOVER_PLANE_STRIDE 12
+
+// Each plane: [nx, ny, nz, offset, pushLimit, push, clipVelocity, px, py, pz, bodySlot, shapeIndex]. The normal points
+// at the mover and the offset is along it from the origin the planes were gathered at, as is the point, the closest
+// point on the shape. pushLimit is FLT_MAX for a rigid plane, push is what b3SolvePlanes moved the mover by.
+static float s_moverPlanes[BX_MOVER_PLANE_CAPACITY * BX_MOVER_PLANE_STRIDE];
+
+BX_EXPORT float* bx_MoverPlanesPtr( void )
+{
+	return s_moverPlanes;
+}
+
+BX_EXPORT int bx_GetMoverPlaneCapacity( void )
+{
+	return BX_MOVER_PLANE_CAPACITY;
+}
+
+typedef struct bxMoverContext
+{
+	int ignoreBody;
+	int capacity;
+	int count;
+} bxMoverContext;
+
+// The shapes a mover meets: not sensors, and not the body it ignores, which is the one a dynamic mover is or a
+// kinematic proxy that follows a geometric one.
+static bool bxMoverFilter( b3ShapeId shapeId, void* context )
+{
+	bxMoverContext* ctx = (bxMoverContext*)context;
+	if ( b3Shape_IsSensor( shapeId ) )
+	{
+		return false;
+	}
+	int bodySlot = bxBodySlotFromShape( shapeId );
+	return bodySlot != 0 && bodySlot != ctx->ignoreBody;
+}
+
+static bool bxMoverPlaneCallback( b3ShapeId shapeId, const b3PlaneResult* planes, int planeCount, void* context )
+{
+	bxMoverContext* ctx = (bxMoverContext*)context;
+	if ( bxMoverFilter( shapeId, context ) == false )
+	{
+		// skip these planes and look for more
+		return true;
+	}
+	int bodySlot = bxBodySlotFromShape( shapeId );
+	int shapeIndex = bxShapeIndex( s_bodies + bodySlot, shapeId );
+	for ( int i = 0; i < planeCount && ctx->count < ctx->capacity; ++i )
+	{
+		float* out = s_moverPlanes + ctx->count * BX_MOVER_PLANE_STRIDE;
+		out[0] = planes[i].plane.normal.x;
+		out[1] = planes[i].plane.normal.y;
+		out[2] = planes[i].plane.normal.z;
+		out[3] = planes[i].plane.offset;
+		out[4] = FLT_MAX;
+		out[5] = 0.0f;
+		out[6] = 1.0f;
+		out[7] = planes[i].point.x;
+		out[8] = planes[i].point.y;
+		out[9] = planes[i].point.z;
+		out[10] = (float)bodySlot;
+		out[11] = (float)shapeIndex;
+		ctx->count += 1;
+	}
+	return ctx->count < ctx->capacity;
+}
+
+/// Gathers the collision planes between the capsule (c1, c2, radius, relative to the origin) and the world, at most
+/// `capacity` of them (and BX_MOVER_PLANE_CAPACITY), into bx_MoverPlanesPtr(). Returns the count.
+BX_EXPORT int bx_World_CollideMover( int w, double ox, double oy, double oz, float c1x, float c1y, float c1z, float c2x, float c2y,
+									 float c2z, float radius, unsigned int categoryBits, unsigned int maskBits, int ignoreBody,
+									 int capacity )
+{
+	b3WorldId worldId = bxGetWorld( w );
+	if ( B3_IS_NULL( worldId ) )
+	{
+		return 0;
+	}
+	bxMoverContext ctx = { ignoreBody, b3ClampInt( capacity, 0, BX_MOVER_PLANE_CAPACITY ), 0 };
+	b3QueryFilter filter = b3DefaultQueryFilter();
+	filter.categoryBits = (uint64_t)categoryBits;
+	filter.maskBits = (uint64_t)maskBits;
+	b3Capsule mover = { bxVec3( c1x, c1y, c1z ), bxVec3( c2x, c2y, c2z ), radius };
+	b3World_CollideMover( worldId, bxPos( ox, oy, oz ), &mover, filter, bxMoverPlaneCallback, &ctx );
+	return ctx.count;
+}
+
+static int bxReadMoverPlanes( b3CollisionPlane* planes, int count )
+{
+	count = b3ClampInt( count, 0, BX_MOVER_PLANE_CAPACITY );
+	for ( int i = 0; i < count; ++i )
+	{
+		const float* in = s_moverPlanes + i * BX_MOVER_PLANE_STRIDE;
+		planes[i].plane.normal = bxVec3( in[0], in[1], in[2] );
+		planes[i].plane.offset = in[3];
+		planes[i].pushLimit = in[4];
+		planes[i].push = in[5];
+		planes[i].clipVelocity = in[6] != 0.0f;
+	}
+	return count;
+}
+
+/// Box3D's plane solver on the first `count` planes in bx_MoverPlanesPtr(): the translation closest to (dx, dy, dz)
+/// that the planes allow, to scratch[0..2]. Writes each plane's push back. Returns the iteration count.
+BX_EXPORT int bx_SolveMoverPlanes( float dx, float dy, float dz, int count )
+{
+	b3CollisionPlane planes[BX_MOVER_PLANE_CAPACITY];
+	count = bxReadMoverPlanes( planes, count );
+	b3PlaneSolverResult result = b3SolvePlanes( bxVec3( dx, dy, dz ), planes, count );
+	for ( int i = 0; i < count; ++i )
+	{
+		s_moverPlanes[i * BX_MOVER_PLANE_STRIDE + 5] = planes[i].push;
+	}
+	bxWriteVec3( 0, result.delta );
+	return result.iterationCount;
+}
+
+/// The vector (vx, vy, vz) clipped against the first `count` planes in bx_MoverPlanesPtr(), to scratch[0..2]. Planes
+/// that did not push, or that do not clip velocity, are skipped.
+BX_EXPORT void bx_ClipMoverVector( float vx, float vy, float vz, int count )
+{
+	b3CollisionPlane planes[BX_MOVER_PLANE_CAPACITY];
+	count = bxReadMoverPlanes( planes, count );
+	bxWriteVec3( 0, b3ClipVector( bxVec3( vx, vy, vz ), planes, count ) );
+}
+
+/// Casts the capsule (c1, c2, radius, relative to the origin) along the translation, sliding along what it meets
+/// rather than stopping at its first touch, and returns the fraction of the translation it may move.
+BX_EXPORT float bx_World_CastMover( int w, double ox, double oy, double oz, float c1x, float c1y, float c1z, float c2x, float c2y,
+									float c2z, float radius, float dx, float dy, float dz, unsigned int categoryBits,
+									unsigned int maskBits, int ignoreBody )
+{
+	b3WorldId worldId = bxGetWorld( w );
+	if ( B3_IS_NULL( worldId ) )
+	{
+		return 1.0f;
+	}
+	bxMoverContext ctx = { ignoreBody, 0, 0 };
+	b3QueryFilter filter = b3DefaultQueryFilter();
+	filter.categoryBits = (uint64_t)categoryBits;
+	filter.maskBits = (uint64_t)maskBits;
+	b3Capsule mover = { bxVec3( c1x, c1y, c1z ), bxVec3( c2x, c2y, c2z ), radius };
+	return b3World_CastMover( worldId, bxPos( ox, oy, oz ), &mover, bxVec3( dx, dy, dz ), filter, bxMoverFilter, &ctx );
+}
+
+/// A geometric mover moving at (vx, vy, vz) pushes the dynamic body it touches at the world point, along the unit
+/// normal from the mover into the body: the impulse a contact would apply to stop the body closing on the mover, all
+/// of it on the body, as though the mover's mass were infinite. A separating body is left alone. Returns the impulse.
+BX_EXPORT float bx_Body_PushFromMover( int slot, double px, double py, double pz, float nx, float ny, float nz, float vx, float vy,
+									   float vz )
+{
+	BX_BODY_RET( slot, 0.0f );
+	if ( b3Body_GetType( body->id ) != b3_dynamicBody )
+	{
+		return 0.0f;
+	}
+
+	b3Pos point = bxPos( px, py, pz );
+	b3Vec3 normal = bxVec3( nx, ny, nz );
+	float invMass = b3Body_GetInverseMass( body->id );
+	b3Matrix3 invI = b3Body_GetWorldInverseRotationalInertia( body->id );
+	b3Vec3 r = b3SubPos( point, b3Body_GetWorldCenter( body->id ) );
+
+	b3Vec3 rn = b3Cross( r, normal );
+	float k = invMass + b3Dot( rn, b3MulMV( invI, rn ) );
+	float normalMass = k > 0.0f ? 1.0f / k : 0.0f;
+
+	b3Vec3 v = b3Body_GetLinearVelocity( body->id );
+	b3Vec3 w = b3Body_GetAngularVelocity( body->id );
+	b3Vec3 vr = b3Add( v, b3Cross( w, r ) );
+	float vn = b3Dot( b3Sub( vr, bxVec3( vx, vy, vz ) ), normal );
+
+	float impulse = b3MaxFloat( -normalMass * vn, 0.0f );
+	if ( impulse > 0.0f )
+	{
+		b3Body_ApplyLinearImpulse( body->id, b3MulSV( impulse, normal ), point, true );
+	}
+	return impulse;
 }
 
 static bxFloatBuffer s_geometry;

@@ -1,6 +1,7 @@
-// Static shapes made without contact creation (bx_ShapeDesc_SetInvokeContactCreation, 0): they never enter the broad
-// phase's move buffer, so the first step reserves no pair slots for them, and one made where a resting body's fat
-// bounds already reach it is paired only when that body moves, as a static made at the start would have been.
+// Static shapes made without contact creation (bx_ShapeDesc_SetInvokeContactCreation, 0): they are not marked as moved
+// in the broad phase's static tree, so the first step does not pair the dynamic tree against them, and one made where a
+// resting body's fat bounds already reach it is paired only when that body moves, as a static made at the start would
+// have been.
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import Box3D from "../lib/node/box3d.mjs";
@@ -97,7 +98,7 @@ describe("a static made without contact creation", () => {
     });
 });
 
-describe("what a static without contact creation saves", () => {
+describe("what a static costs the first step, with contact creation or without", () => {
     /** The top of the module's heap: where a block too big for any free gap lands. */
     function heapTop(module: any): number {
         const p = module._malloc(128 * 1048576);
@@ -136,23 +137,24 @@ describe("what a static without contact creation saves", () => {
         return { madeEach: (t1 - t0) / count, firstStepEach: (t2 - t1) / count, stackEach: stack / count };
     }
 
-    it("keeps the statics out of the first step's move buffer, and its stack", async () => {
+    it("takes no memory for each static in the first step either way", async () => {
         const count = 20000;
         const on = await measure(count, 1);
         const off = await measure(count, 0);
         console.log(
             `a static capsule, eight to a body, with contact creation: made ${on.madeEach.toFixed(1)} B, first step ` +
-                `${on.firstStepEach.toFixed(1)} B (stack ${on.stackEach.toFixed(1)} B); without: made ${off.madeEach.toFixed(1)} B, ` +
+                `${on.firstStepEach.toFixed(1)} B (stack ${on.stackEach.toFixed(2)} B); without: made ${off.madeEach.toFixed(1)} B, ` +
                 `first step ${off.firstStepEach.toFixed(1)} B (stack ${off.stackEach.toFixed(2)} B)`
         );
-        // with contact creation, every static reserves its move result and sixteen pair slots, and the stack keeps
-        // half as much again
-        expect(on.stackEach).toBeGreaterThan(300);
-        expect(on.firstStepEach).toBeGreaterThan(400);
-        // without, the stack holds the box's query alone, whatever the statics' count
+        // Box3D's broad phase before October 2026 queried every moved proxy on its own, so each static made with
+        // contact creation reserved a move result and sixteen pair slots in the first step (over 400 B, 300 of them on
+        // the stack). It now collides its trees against each other and only marks a proxy as moved, so neither way
+        // costs the step anything per static, and turning contact creation off spares only that step's walk of the
+        // static tree.
+        expect(on.stackEach).toBeLessThan(1);
+        expect(on.firstStepEach).toBeLessThan(1);
         expect(off.stackEach).toBeLessThan(1);
         expect(off.firstStepEach).toBeLessThan(1);
-        // and nothing is pushed on the move array as each is made
-        expect(off.madeEach).toBeLessThan(on.madeEach);
+        expect(off.madeEach).toBeLessThanOrEqual(on.madeEach);
     });
 });

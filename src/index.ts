@@ -6,6 +6,15 @@
 
 // the .js extension keeps the emitted dist/index.js importable by plain node ESM, not just by bundlers
 export { BOX3D_HEIGHT_FIELD_HOLE, Box3DPlugin, Box3DWheelJoint, type IBox3DPluginOptions, type IBox3DWheelJointOptions } from "./box3dPlugin.js";
+export {
+    Box3DDynamicMover,
+    Box3DGeometricMover,
+    type IBox3DDynamicMoverOptions,
+    type IBox3DGeometricMoverOptions,
+    type IBox3DMoverGround,
+    type IBox3DMoverPlane,
+    type IBox3DMoverProbe,
+} from "./box3dMovers.js";
 export { default as Box3D } from "babylon-box3d/wasm";
 export type { Box3DModule, Box3DModuleOptions, Box3DExports, Box3DHeap } from "babylon-box3d/wasm";
 export { CanUseBox3DThreads, LoadBox3D, type ILoadBox3DOptions } from "./loadBox3D.js";

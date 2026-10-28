@@ -454,6 +454,7 @@ const RequiredNativeExports = [
     "_bx_Body_GetLinearVelocity", "_bx_Body_GetMassData", "_bx_Body_GetTransform", "_bx_Body_SetAngularDamping", "_bx_Body_SetAngularVelocity",
     "_bx_Body_SetAwake", "_bx_Body_SetEventFlags", "_bx_Body_SetGravityScale", "_bx_Body_SetLinearDamping", "_bx_Body_SetLinearVelocity",
     "_bx_Body_GetClipPlane", "_bx_Body_SetClipPlane", "_bx_Body_SetMassDataFull","_bx_Body_SetMotionLocks", "_bx_Body_SetShape", "_bx_Body_SetTargetTransform", "_bx_Body_SetTransform",
+    "_bx_Body_GetSafetyFactor", "_bx_Body_SetSafetyFactor",
     "_bx_Body_SetType", "_bx_Body_SyncShapeDesc", "_bx_ComputeAlignedFrameB", "_bx_ContactEventsPtr", "_bx_CreateBody", "_bx_CreateJoint",
     "_bx_CreateWorld", "_bx_DebugIndexCount", "_bx_DebugIndicesPtr", "_bx_DebugPositionsPtr", "_bx_DestroyBody", "_bx_DestroyJoint",
     "_bx_DestroyWorld", "_bx_GetMaxWorkers", "_bx_GetRejectedSlotCount", "_bx_Joint_EnableLimit", "_bx_Joint_EnableMotor",
@@ -469,7 +470,8 @@ const RequiredNativeExports = [
     "_bx_ShapeDesc_SetMaterial", "_bx_ShapeDesc_SetRollingResistance", "_bx_ShapeDesc_SetSensor", "_bx_World_CastRay", "_bx_World_EnableContinuous",
     "_bx_World_EnableSleeping", "_bx_World_Explode", "_bx_World_GetContactEvents", "_bx_World_GetMaximumLinearSpeed", "_bx_World_GetMoveEvents",
     "_bx_World_GetSensorEvents", "_bx_World_GetStats", "_bx_World_GetWorkerCount", "_bx_World_SetGravity", "_bx_World_SetMaximumLinearSpeed",
-    "_bx_World_Step"
+    "_bx_World_Step", "_bx_World_EnableRestitutionPropagation", "_bx_World_GetIsotropicInertiaTolerance", "_bx_World_GetRestitutionIterations",
+    "_bx_World_IsRestitutionPropagationEnabled", "_bx_World_SetIsotropicInertiaTolerance", "_bx_World_SetRestitutionIterations"
 ];
 
 /**
@@ -546,6 +548,11 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
     public onCollisionEndedObservable = new Observable<IBasePhysicsCollisionEvent>();
     /** Observable for trigger entered and exited events */
     public onTriggerCollisionObservable = new Observable<IBasePhysicsCollisionEvent>();
+    /**
+     * Notified with the time step right before each Box3D world step, after the bodies' pre-step transforms. Code that
+     * has to act once per step with that step's time, such as a {@link Box3DDynamicMover} update, goes here.
+     */
+    public onBeforeWorldStepObservable = new Observable<number>();
 
     /**
      * Creates a Box3D plugin.
@@ -703,6 +710,7 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
 
         const deltaTime = this._useDeltaForWorldStep ? delta : this._fixedTimeStep;
         this._timeStep = deltaTime;
+        this.onBeforeWorldStepObservable.notifyObservers(deltaTime);
         const start = performance.now();
         this._b3._bx_World_Step(this._worldSlot, deltaTime, this.subStepCount);
 
@@ -809,6 +817,48 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         const data = new Box3DBodyData(slot);
         data.motionType = motionType;
         return data;
+    }
+
+    /**
+     * How many restitution passes each step makes after the solver, 0 to 63 (Box3D's default is 2). Box3D notes that
+     * more passes can leave a bouncing box spinning less. Box3D extension.
+     */
+    public setRestitutionIterations(iterations: number): void {
+        this._b3._bx_World_SetRestitutionIterations(this._worldSlot, Math.max(0, Math.min(63, Math.floor(iterations))));
+    }
+
+    /** The restitution passes each step makes, see {@link setRestitutionIterations}. */
+    public getRestitutionIterations(): number {
+        return this._b3._bx_World_GetRestitutionIterations(this._worldSlot);
+    }
+
+    /**
+     * Restitution propagation: the restitution passes also solve the contacts that have no restitution, so a bounce
+     * carries through a stack or a row of bodies instead of stopping at the first contact. Off by default, since every
+     * contact then takes part in every pass. Box3D extension.
+     */
+    public setRestitutionPropagationEnabled(enabled: boolean): void {
+        this._b3._bx_World_EnableRestitutionPropagation(this._worldSlot, enabled ? 1 : 0);
+    }
+
+    /** Whether restitution propagates, see {@link setRestitutionPropagationEnabled}. */
+    public isRestitutionPropagationEnabled(): boolean {
+        return this._b3._bx_World_IsRestitutionPropagationEnabled(this._worldSlot) !== 0;
+    }
+
+    /**
+     * How far from isotropic, 0 to 1, a body's inertia may be before Box3D integrates its gyroscopic torque, the torque
+     * that makes a spinning top precess and a T-handle flip. Below the tolerance a body skips that work. A sphere is 0
+     * and a 1 x 1 x 2 box 0.5; Box3D's default is 0.2. Only bodies created or given new mass properties afterwards see a
+     * change. Box3D extension.
+     */
+    public setIsotropicInertiaTolerance(tolerance: number): void {
+        this._b3._bx_World_SetIsotropicInertiaTolerance(this._worldSlot, tolerance);
+    }
+
+    /** See {@link setIsotropicInertiaTolerance}. */
+    public getIsotropicInertiaTolerance(): number {
+        return this._b3._bx_World_GetIsotropicInertiaTolerance(this._worldSlot);
     }
 
     public initBody(body: PhysicsBody, motionType: PhysicsMotionType, position: Vector3, orientation: Quaternion): void {
@@ -1447,6 +1497,20 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
                     : this._b3._bx_Body_SetClipPlane(data.slot, 0, 0, 0, 0, 0, 0),
             instanceIndex
         );
+    }
+
+    /**
+     * Continuous collision's safety factor for the body: a shape is swept against static geometry once it moves further
+     * in a step than this fraction of its smallest extent. Smaller is safer against tunneling and can make a fast body
+     * hitch; Box3D's default is 0.5 and it recommends 0.01 to 0.5. Box3D extension.
+     */
+    public setBodySafetyFactor(body: PhysicsBody, safetyFactor: number, instanceIndex?: number): void {
+        this._applyToBodyOrInstances(body, (data) => this._b3._bx_Body_SetSafetyFactor(data.slot, safetyFactor), instanceIndex);
+    }
+
+    /** The body's continuous collision safety factor, see {@link setBodySafetyFactor}. */
+    public getBodySafetyFactor(body: PhysicsBody, instanceIndex?: number): number {
+        return this._b3._bx_Body_GetSafetyFactor(this._getPluginReference(body, instanceIndex).slot);
     }
 
     /** The body's clip plane and collide mask from {@link setBodyClipPlane}, or null when it has none. */
@@ -2773,6 +2837,31 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
     }
 
     /**
+     * The module and the world, for the character movers in box3dMovers.ts, which call Box3D the way its samples do.
+     * @internal
+     */
+    public _native(): { b3: any; world: number } {
+        return { b3: this._b3, world: this._worldSlot };
+    }
+
+    /**
+     * The native slot of a body, 0 for none.
+     * @internal
+     */
+    public _bodySlot(body: PhysicsBody, instanceIndex?: number): number {
+        return this._getPluginReference(body, instanceIndex)?.slot ?? 0;
+    }
+
+    /**
+     * The body and instance index behind a native slot.
+     * @internal
+     */
+    public _bodyFromSlot(slot: number): { body: PhysicsBody; index: number } | undefined {
+        const ref = this._bodies[slot];
+        return ref ? { body: ref.body, index: ref.index } : undefined;
+    }
+
+    /**
      * @internal
      */
     public _wheelCall(fn: string, slot: number, ...args: number[]): void {
@@ -2954,6 +3043,7 @@ export class Box3DPlugin implements IPhysicsEnginePluginV2 {
         this.onCollisionObservable.clear();
         this.onCollisionEndedObservable.clear();
         this.onTriggerCollisionObservable.clear();
+        this.onBeforeWorldStepObservable.clear();
         this._bodyCollisionObservable.clear();
         this._bodyCollisionEndedObservable.clear();
         for (const shape of this._shapes) {

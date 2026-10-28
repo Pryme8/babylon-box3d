@@ -46,5 +46,7 @@ for (const set of sets) {
 }
 b3._bx_DestroyWorld(world);
 say({ results });
-// the threaded build keeps its worker pool alive, which would keep this process up
-process.exit(0);
+// The threaded build keeps its worker pool alive, which would keep this process up, so it is ended here. The process
+// then ends by itself rather than through process.exit: on Windows that aborts Node in libuv's async.c while V8 is
+// still compiling the module's optimized tier in the background, which a module this size still is by now.
+b3.PThread?.terminateAllThreads?.();

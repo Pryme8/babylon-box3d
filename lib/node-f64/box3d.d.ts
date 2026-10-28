@@ -61,6 +61,15 @@ export interface Box3DExports {
     _bx_World_EnableTimer(world: number, flag: number): void;
     _bx_World_IsTimerEnabled(world: number): number;
     _bx_World_SetContactTuning(world: number, hertz: number, dampingRatio: number, contactSpeed: number): void;
+    /** Restitution passes after the solver, [0, 63]. Box3D's default is 2. */
+    _bx_World_SetRestitutionIterations(world: number, iterations: number): void;
+    _bx_World_GetRestitutionIterations(world: number): number;
+    /** The restitution passes also solve contacts without restitution, so a bounce carries through what it reaches. */
+    _bx_World_EnableRestitutionPropagation(world: number, flag: number): void;
+    _bx_World_IsRestitutionPropagationEnabled(world: number): number;
+    /** How far from isotropic, [0, 1], a body's inertia may be before its gyroscopic torque is integrated. New mass only. */
+    _bx_World_SetIsotropicInertiaTolerance(world: number, tolerance: number): void;
+    _bx_World_GetIsotropicInertiaTolerance(world: number): number;
     _bx_World_Explode(world: number, px: number, py: number, pz: number, radius: number, falloff: number, impulsePerArea: number): void;
     _bx_World_GetAwakeBodyCount(world: number): number;
     /** Joint force/torque threshold events from the last step (0 with the default thresholds). */
@@ -115,6 +124,13 @@ export interface Box3DExports {
     /** The fat AABB margin of the body's shapes, m (wasm/patches/0008): 0, the default, leaves each shape its own. */
     _bx_Body_SetAabbMargin(body: number, margin: number): void;
     _bx_Body_GetAabbMargin(body: number): number;
+    /** Continuous collision sweeps a shape that moves further in a step than this fraction of its smallest extent (0.5). */
+    _bx_Body_SetSafetyFactor(body: number, safetyFactor: number): void;
+    _bx_Body_GetSafetyFactor(body: number): number;
+    /** The velocity of a world point moving with the body, to scratch[0..2]. */
+    _bx_Body_GetPointVelocity(body: number, px: number, py: number, pz: number): void;
+    /** A world point in the body's frame, to scratch[0..2]. */
+    _bx_Body_GetLocalPoint(body: number, px: number, py: number, pz: number): void;
     /**
      * Crushable contacts for the body's shape `index`: each of its contacts pushes with at most `maxForce` newtons,
      * and a plastic one (1) keeps its overlap instead of pushing out. A `maxForce` of zero or less makes it rigid.
@@ -248,10 +264,10 @@ export interface Box3DExports {
     _bx_ShapeDesc_SetSensor(desc: number, flag: number): void;
     _bx_ShapeDesc_IsSensor(desc: number): number;
     /**
-     * 1 (the default): a static shape made from this description looks for its own pairs on the next step. 0: it never
-     * enters the broad phase's move buffer and waits for a moving shape to find it, which saves the step stack it would
-     * reserve and pairs a static made late on the same step as one made at the start. Off on a container, it is off for
-     * every shape made from its children.
+     * 1 (the default): a static shape made from this description looks for its own pairs on the next step. 0: it is not
+     * marked as moved in the broad phase and waits for a moving shape to find it, which spares that step's walk of the
+     * static tree and pairs a static made late on the same step as one made at the start. Off on a container, it is off
+     * for every shape made from its children.
      */
     _bx_ShapeDesc_SetInvokeContactCreation(desc: number, flag: number): void;
     _bx_ShapeDesc_GetInvokeContactCreation(desc: number): number;
@@ -294,6 +310,25 @@ export interface Box3DExports {
     _bx_WheelJoint_EnableSpinMotor(joint: number, flag: number): void;
     _bx_WheelJoint_SetTargetSteeringAngle(joint: number, radians: number): void;
     _bx_WheelJoint_SetSuspension(joint: number, hertz: number, dampingRatio: number): void;
+    /** Moves the joint's frames to scratch[0..13], as `_bx_CreateJoint` reads them. */
+    _bx_Joint_SetLocalFrames(joint: number): void;
+    /** A mover joint (type 8) drives body B to this velocity relative to body A. */
+    _bx_MoverJoint_SetLinearVelocity(joint: number, vx: number, vy: number, vz: number): void;
+    _bx_MoverJoint_SetMaxForce(joint: number, maxForce: number): void;
+    /** A pogo joint's (type 9) unit ground normal, spring, rest length and force limits. */
+    _bx_PogoJoint_Set(
+        joint: number,
+        nx: number,
+        ny: number,
+        nz: number,
+        hertz: number,
+        dampingRatio: number,
+        restLength: number,
+        maxTensionForce: number,
+        maxCompressionForce: number
+    ): void;
+    /** A pogo joint's [currentLength, currentSpeed, impulse] to scratch[0..2]. */
+    _bx_PogoJoint_GetState(joint: number): void;
 
     // queries
     _bx_RayHitsPtr(): number;
@@ -312,6 +347,55 @@ export interface Box3DExports {
     /** Shape `index`'s geometry in the body's frame, from `_bx_GeometryPtr`: sphere [c, r], capsule [c1, c2, r], or hull points. Returns the float count. */
     _bx_Body_GetShapeGeometry(body: number, index: number): number;
     _bx_GeometryPtr(): number;
+
+    // character movers
+    /** Collision planes, 12 floats each: [nx, ny, nz, offset, pushLimit, push, clipVelocity, px, py, pz, bodySlot, shapeIndex]. */
+    _bx_MoverPlanesPtr(): number;
+    _bx_GetMoverPlaneCapacity(): number;
+    /** Gathers the planes between the capsule (relative to the origin) and the world into `_bx_MoverPlanesPtr`. Returns the count. */
+    _bx_World_CollideMover(
+        world: number,
+        ox: number,
+        oy: number,
+        oz: number,
+        c1x: number,
+        c1y: number,
+        c1z: number,
+        c2x: number,
+        c2y: number,
+        c2z: number,
+        radius: number,
+        categoryBits: number,
+        maskBits: number,
+        ignoreBody: number,
+        capacity: number
+    ): number;
+    /** The translation closest to (dx, dy, dz) the first `count` planes allow, to scratch[0..2]. Returns the iterations. */
+    _bx_SolveMoverPlanes(dx: number, dy: number, dz: number, count: number): number;
+    /** The vector clipped against the first `count` planes that pushed and clip velocity, to scratch[0..2]. */
+    _bx_ClipMoverVector(vx: number, vy: number, vz: number, count: number): void;
+    /** Casts the capsule (relative to the origin) along the translation, sliding. Returns the fraction it may move. */
+    _bx_World_CastMover(
+        world: number,
+        ox: number,
+        oy: number,
+        oz: number,
+        c1x: number,
+        c1y: number,
+        c1z: number,
+        c2x: number,
+        c2y: number,
+        c2z: number,
+        radius: number,
+        dx: number,
+        dy: number,
+        dz: number,
+        categoryBits: number,
+        maskBits: number,
+        ignoreBody: number
+    ): number;
+    /** A geometric mover moving at v pushes the dynamic body at the world point along the normal into it. Returns the impulse. */
+    _bx_Body_PushFromMover(body: number, px: number, py: number, pz: number, nx: number, ny: number, nz: number, vx: number, vy: number, vz: number): number;
 }
 
 export type Box3DModule = Box3DExports & Box3DHeap;

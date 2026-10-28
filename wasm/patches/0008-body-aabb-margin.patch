@@ -1,8 +1,8 @@
 diff --git a/include/box3d/box3d.h b/include/box3d/box3d.h
-index 0964214..3e14317 100644
+index 3d99716..39d4aa5 100644
 --- a/include/box3d/box3d.h
 +++ b/include/box3d/box3d.h
-@@ -726,6 +726,16 @@ B3_API void b3Body_EnableContinuous( b3BodyId bodyId, bool flag );
+@@ -777,6 +777,16 @@ B3_API void b3Body_EnableContinuous( b3BodyId bodyId, bool flag );
  /// Is continuous collision enabled for this body?
  B3_API bool b3Body_IsContinuousEnabled( b3BodyId bodyId );
  
@@ -20,18 +20,18 @@ index 0964214..3e14317 100644
  /// Normally rotation speed is clamped to improve CCD. However, this clamping is unnecessary for
  /// bodies that only rotate fast around an axis of symmetry.
 diff --git a/src/body.c b/src/body.c
-index 5688c9b..2bbb378 100644
+index 0896b70..04f6e8c 100644
 --- a/src/body.c
 +++ b/src/body.c
-@@ -281,6 +281,7 @@ b3BodyId b3CreateBody( b3WorldId worldId, const b3BodyDef* def )
+@@ -306,6 +306,7 @@ b3BodyId b3CreateBody( b3WorldId worldId, const b3BodyDef* def )
  	body->bodyMoveIndex = B3_NULL_INDEX;
  	body->id = bodyId;
  	body->sleepThreshold = def->sleepThreshold;
 +	body->aabbMargin = 0.0f;
  	body->sleepTime = 0.0f;
  	body->sleepVelocity = 0.0f;
- 	body->mass = 0.0f;
-@@ -2405,6 +2406,37 @@ void b3Body_EnableContinuous( b3BodyId bodyId, bool flag )
+ 	body->safetyFactor = def->safetyFactor;
+@@ -2516,6 +2517,37 @@ void b3Body_EnableContinuous( b3BodyId bodyId, bool flag )
  	}
  }
  
@@ -70,10 +70,10 @@ index 5688c9b..2bbb378 100644
  {
  	b3World* world = b3GetWorld( bodyId.world0 );
 diff --git a/src/body.h b/src/body.h
-index fb5af42..5c37fd5 100644
+index b5c01db..f08e63e 100644
 --- a/src/body.h
 +++ b/src/body.h
-@@ -110,6 +110,9 @@ typedef struct b3Body
+@@ -115,6 +115,9 @@ typedef struct b3Body
  
  	float sleepThreshold;
  	float sleepTime;
@@ -81,25 +81,25 @@ index fb5af42..5c37fd5 100644
 +	// The fat AABB margin of this body's shapes (b3Body_SetAabbMargin), or zero for each shape's own.
 +	float aabbMargin;
  	float sleepVelocity;
+ 	float safetyFactor;
  	float mass;
- 
 diff --git a/src/recording_ops.inl b/src/recording_ops.inl
-index a0b3635..81d9881 100644
+index ce1a9e9..7349c83 100644
 --- a/src/recording_ops.inl
 +++ b/src/recording_ops.inl
-@@ -70,6 +70,7 @@ B3_REC_OP( 0x38, BodyEnableContactRecycling, RET_NONE, ARG( BODYID, body ) ARG(
- B3_REC_OP( 0x39, BodyEnableHitEvents, RET_NONE, ARG( BODYID, body ) ARG( BOOL, flag ) )
+@@ -75,6 +75,7 @@ B3_REC_OP( 0x39, BodyEnableHitEvents, RET_NONE, ARG( BODYID, body ) ARG( BOOL, f
  B3_REC_OP( 0x3A, BodyAllowFastRotation, RET_NONE, ARG( BODYID, body ) ARG( BOOL, flag ) )
- B3_REC_OP( 0x3B, BodyEnableContinuous, RET_NONE, ARG( BODYID, body ) ARG( BOOL, flag ) )
-+B3_REC_OP( 0x3C, BodySetAabbMargin, RET_NONE, ARG( BODYID, body ) ARG( F32, margin ) )
+ B3_REC_OP( 0x3B, BodySetSafetyFactor, RET_NONE, ARG( BODYID, body ) ARG( F32, value ) )
+ B3_REC_OP( 0x3C, BodyEnableContinuous, RET_NONE, ARG( BODYID, body ) ARG( BOOL, flag ) )
++B3_REC_OP( 0x3D, BodySetAabbMargin, RET_NONE, ARG( BODYID, body ) ARG( F32, margin ) )
  
  // Shape create/destroy
  B3_REC_OP( 0x40, CreateSphereShape, RET_SHAPEID, ARG( BODYID, body ) ARG( SHAPEDEF, def ) ARG( SPHERE, sphere ) )
-diff --git a/src/recording_replay.c b/src/recording_replay.c
-index 8da719d..1b19d6d 100644
---- a/src/recording_replay.c
-+++ b/src/recording_replay.c
-@@ -969,6 +969,11 @@ static void b3RecDispatch_BodyEnableContinuous( const b3RecArgs_BodyEnableContin
+diff --git a/src/replay.c b/src/replay.c
+index 694f112..fd4dde6 100644
+--- a/src/replay.c
++++ b/src/replay.c
+@@ -992,6 +992,11 @@ static void b3RecDispatch_BodyEnableContinuous( const b3RecArgs_BodyEnableContin
  	b3Body_EnableContinuous( b3RecMakeBodyId( rdr, a->body ), a->flag );
  }
  
@@ -112,7 +112,7 @@ index 8da719d..1b19d6d 100644
  {
  	b3Body_EnableContactRecycling( b3RecMakeBodyId( rdr, a->body ), a->flag );
 diff --git a/src/shape.c b/src/shape.c
-index 62637ed..f9b6d88 100644
+index 37237b3..a5d585c 100644
 --- a/src/shape.c
 +++ b/src/shape.c
 @@ -25,8 +25,15 @@ static b3Shape* b3GetShape( b3World* world, b3ShapeId shapeId )
@@ -132,16 +132,16 @@ index 62637ed..f9b6d88 100644
  	float margin = 0.0f;
  
  	switch ( shape->type )
-@@ -188,7 +195,7 @@ static b3Shape* b3CreateShapeInternal( b3World* world, b3Body* body, b3WorldTran
+@@ -184,7 +191,7 @@ static b3Shape* b3CreateShapeInternal( b3World* world, b3Body* body, b3WorldTran
  	shape->flags |= def->enableSpeculativeContact ? b3_enableSpeculative : 0;
  	shape->proxyKey = B3_NULL_INDEX;
  	shape->localCentroid = b3GetShapeCentroid( shape );
 -	shape->aabbMargin = b3ComputeShapeMargin( shape );
 +	shape->aabbMargin = b3ComputeShapeMargin( world, shape );
  	shape->aabb = (b3AABB){ b3Vec3_zero, b3Vec3_zero };
- 	shape->fatAABB = (b3AABB){ b3Vec3_zero, b3Vec3_zero };
+ 	world->fatAABBs.data[shapeId] = (b3AABB){ b3Vec3_zero, b3Vec3_zero };
  	shape->nameId = b3AddName( &world->names, def->name );
-@@ -1663,7 +1670,7 @@ void b3Shape_SetSphere( b3ShapeId shapeId, const b3Sphere* sphere )
+@@ -1696,7 +1703,7 @@ void b3Shape_SetSphere( b3ShapeId shapeId, const b3Sphere* sphere )
  
  	shape->sphere = *sphere;
  	shape->type = b3_sphereShape;
@@ -150,7 +150,7 @@ index 62637ed..f9b6d88 100644
  
  	// need to wake bodies so they can react to the shape change
  	bool wakeBodies = true;
-@@ -1691,7 +1698,7 @@ void b3Shape_SetCapsule( b3ShapeId shapeId, const b3Capsule* capsule )
+@@ -1724,7 +1731,7 @@ void b3Shape_SetCapsule( b3ShapeId shapeId, const b3Capsule* capsule )
  
  	shape->capsule = *capsule;
  	shape->type = b3_capsuleShape;
@@ -159,7 +159,7 @@ index 62637ed..f9b6d88 100644
  
  	// need to wake bodies so they can react to the shape change
  	bool wakeBodies = true;
-@@ -1740,7 +1747,7 @@ void b3Shape_SetHull( b3ShapeId shapeId, const b3HullData* hull )
+@@ -1773,7 +1780,7 @@ void b3Shape_SetHull( b3ShapeId shapeId, const b3HullData* hull )
  
  	shape->hull = data;
  	shape->type = b3_hullShape;
@@ -168,7 +168,7 @@ index 62637ed..f9b6d88 100644
  
  	// need to wake bodies so they can react to the shape change
  	bool wakeBodies = true;
-@@ -1777,7 +1784,7 @@ void b3Shape_SetMesh( b3ShapeId shapeId, const b3MeshData* meshData, b3Vec3 scal
+@@ -1810,7 +1817,7 @@ void b3Shape_SetMesh( b3ShapeId shapeId, const b3MeshData* meshData, b3Vec3 scal
  	shape->mesh.data = meshData;
  	shape->mesh.scale = b3SafeScale( scale );
  	shape->type = b3_meshShape;
@@ -178,7 +178,7 @@ index 62637ed..f9b6d88 100644
  	// need to wake bodies so they can react to the shape change
  	bool wakeBodies = true;
 diff --git a/src/shape.h b/src/shape.h
-index 4b48c01..86b26b8 100644
+index 1c47a0d..b4d7f48 100644
 --- a/src/shape.h
 +++ b/src/shape.h
 @@ -90,6 +90,9 @@ void b3DestroyShapeProxy( b3Shape* shape, b3BroadPhase* bp );
@@ -190,4 +190,4 @@ index 4b48c01..86b26b8 100644
 +
  b3MassData b3ComputeShapeMass( const b3Shape* shape );
  b3ShapeExtent b3ComputeShapeExtent( const b3Shape* shape, b3Vec3 localCenter );
- 
+ float b3ComputeShapeMinExtent( const b3Shape* shape, b3Vec3 localCenter );

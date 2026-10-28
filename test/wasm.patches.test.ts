@@ -1,6 +1,7 @@
 // The Box3D patches in wasm/patches, against the real wasm through the shim's raw exports: continuous collision
-// switched per body (0002), and the broad phase querying with a shape's own mask bits (0001), which must find every
-// pair it found before and only skip what the filters already rule out.
+// switched per body (0002). And the pairs the broad phase finds under masks and groups, which a patch (0001) once
+// pruned by the moved shape's own mask: Box3D's broad phase now collides whole trees and its nodes carry no category
+// bits, so the patch is gone, and these keep checking that every pair the filters allow is still found.
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { LoadBox3D } from "./wasmScene";
@@ -100,7 +101,7 @@ describe("continuous collision per body", () => {
     });
 });
 
-describe("the broad phase queries with a shape's own mask", () => {
+describe("the broad phase under masks and groups", () => {
     const OWN = 0x2;
     const OTHERS = ~OWN >>> 0;
 

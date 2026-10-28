@@ -1,8 +1,8 @@
 diff --git a/include/box3d/box3d.h b/include/box3d/box3d.h
-index 2e82590..8215b0b 100644
+index d9f5fdf..5113b78 100644
 --- a/include/box3d/box3d.h
 +++ b/include/box3d/box3d.h
-@@ -713,6 +713,16 @@ B3_API void b3Body_SetBullet( b3BodyId bodyId, bool flag );
+@@ -764,6 +764,16 @@ B3_API void b3Body_SetBullet( b3BodyId bodyId, bool flag );
  /// Is this body a bullet?
  B3_API bool b3Body_IsBullet( b3BodyId bodyId );
  
@@ -20,10 +20,10 @@ index 2e82590..8215b0b 100644
  /// Normally rotation speed is clamped to improve CCD. However, this clamping is unnecessary for
  /// bodies that only rotate fast around an axis of symmetry.
 diff --git a/src/body.c b/src/body.c
-index f517e7b..5688c9b 100644
+index 70bbc28..0896b70 100644
 --- a/src/body.c
 +++ b/src/body.c
-@@ -2384,6 +2384,34 @@ bool b3Body_IsBullet( b3BodyId bodyId )
+@@ -2495,6 +2495,34 @@ bool b3Body_IsBullet( b3BodyId bodyId )
  	return ( body->flags & b3_isBullet ) != 0;
  }
  
@@ -59,36 +59,36 @@ index f517e7b..5688c9b 100644
  {
  	b3World* world = b3GetUnlockedWorld( bodyId.world0 );
 diff --git a/src/body.h b/src/body.h
-index ae90105..fb5af42 100644
+index b03063d..b5c01db 100644
 --- a/src/body.h
 +++ b/src/body.h
-@@ -61,6 +61,9 @@ enum b3BodyFlags
- 	// data still hasn't been set.
- 	b3_dirtyMass = 0x00008000,
+@@ -66,6 +66,9 @@ enum b3BodyFlags
+ 
+ 	b3_enableGyroscopicTorque = 0x00010000,
  
 +	// Continuous collision is off for this body.
-+	b3_disableContinuous = 0x00010000,
++	b3_disableContinuous = 0x00020000,
 +
  	// All lock flags
  	b3_allLocks = b3_lockLinearX | b3_lockLinearY | b3_lockLinearZ | b3_lockAngularX | b3_lockAngularY | b3_lockAngularZ,
  
 diff --git a/src/recording_ops.inl b/src/recording_ops.inl
-index 3f0cf42..b12a4dc 100644
+index df13ebe..f154149 100644
 --- a/src/recording_ops.inl
 +++ b/src/recording_ops.inl
-@@ -69,6 +69,7 @@ B3_REC_OP( 0x37, BodySetBullet, RET_NONE, ARG( BODYID, body ) ARG( BOOL, flag )
- B3_REC_OP( 0x38, BodyEnableContactRecycling, RET_NONE, ARG( BODYID, body ) ARG( BOOL, flag ) )
+@@ -74,6 +74,7 @@ B3_REC_OP( 0x38, BodyEnableContactRecycling, RET_NONE, ARG( BODYID, body ) ARG(
  B3_REC_OP( 0x39, BodyEnableHitEvents, RET_NONE, ARG( BODYID, body ) ARG( BOOL, flag ) )
  B3_REC_OP( 0x3A, BodyAllowFastRotation, RET_NONE, ARG( BODYID, body ) ARG( BOOL, flag ) )
-+B3_REC_OP( 0x3B, BodyEnableContinuous, RET_NONE, ARG( BODYID, body ) ARG( BOOL, flag ) )
+ B3_REC_OP( 0x3B, BodySetSafetyFactor, RET_NONE, ARG( BODYID, body ) ARG( F32, value ) )
++B3_REC_OP( 0x3C, BodyEnableContinuous, RET_NONE, ARG( BODYID, body ) ARG( BOOL, flag ) )
  
  // Shape create/destroy
  B3_REC_OP( 0x40, CreateSphereShape, RET_SHAPEID, ARG( BODYID, body ) ARG( SHAPEDEF, def ) ARG( SPHERE, sphere ) )
-diff --git a/src/recording_replay.c b/src/recording_replay.c
-index d1a40bc..234f306 100644
---- a/src/recording_replay.c
-+++ b/src/recording_replay.c
-@@ -964,6 +964,11 @@ static void b3RecDispatch_BodyAllowFastRotation( const b3RecArgs_BodyAllowFastRo
+diff --git a/src/replay.c b/src/replay.c
+index 78b73df..772f998 100644
+--- a/src/replay.c
++++ b/src/replay.c
+@@ -987,6 +987,11 @@ static void b3RecDispatch_BodyAllowFastRotation( const b3RecArgs_BodyAllowFastRo
  	b3Body_AllowFastRotation( b3RecMakeBodyId( rdr, a->body ), a->flag );
  }
  
@@ -101,16 +101,16 @@ index d1a40bc..234f306 100644
  {
  	b3Body_EnableContactRecycling( b3RecMakeBodyId( rdr, a->body ), a->flag );
 diff --git a/src/solver.c b/src/solver.c
-index d8aace0..0de9612 100644
+index 236c848..f1f9065 100644
 --- a/src/solver.c
 +++ b/src/solver.c
-@@ -758,7 +758,8 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
+@@ -792,7 +792,8 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
  
- 			const float safetyFactor = 0.5f;
+ 			float safetyFactor = body->safetyFactor;
  			float maxMotion = b3MaxFloat( maxDeltaPosition, maxVelocity * timeStep );
 -			if ( body->type == b3_dynamicBody && enableContinuous && maxMotion > safetyFactor * sim->minExtent )
 +			if ( body->type == b3_dynamicBody && enableContinuous && ( body->flags & b3_disableContinuous ) == 0 &&
 +				 maxMotion > safetyFactor * sim->minExtent )
  			{
- 				// This flag is only retained for debug draw
+ 				// This flag is used for debug draw and contact recycling.
  				sim->flags |= b3_isFast;
