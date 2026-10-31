@@ -4427,3 +4427,39 @@ BX_EXPORT int bx_Body_GetShapeGeometry( int slot, int index )
 	}
 	return s_geometry.count;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Memory snapshots (src/box3dSnapshot.ts)
+// ---------------------------------------------------------------------------------------------
+//
+// Everything a single threaded module holds - every world in it with its bodies, shapes, joints, contacts and their
+// warm starts, the shim's slots and shape descriptions, and the allocator's books - lies in its linear memory below
+// the break, and nothing of it anywhere else: the one mutable wasm global, the stack pointer, is at its base whenever
+// JavaScript runs, and dlmalloc is built never to trim, so nothing is written above the break. A copy of [0, break)
+// taken between steps and written back later puts the module back as it was, so the steps that follow are the ones
+// that followed then, to the bit. The break and the heap's base are what JavaScript cannot read for itself.
+
+#include <emscripten/heap.h>
+#include <unistd.h>
+
+extern unsigned char __heap_base;
+
+/// The break: bytes from 0 to the end of the memory the module's state lies in.
+BX_EXPORT uint32_t bx_Memory_End( void )
+{
+	return (uint32_t)(uintptr_t)sbrk( 0 );
+}
+
+/// Where the heap begins, past the static data and the stack: a snapshot is written back only into a build whose heap
+/// begins where the one it was taken on did.
+BX_EXPORT uint32_t bx_Memory_Base( void )
+{
+	return (uint32_t)(uintptr_t)&__heap_base;
+}
+
+/// Grows the memory to hold `bytes`, as a fresh instance must to take a larger snapshot, without the allocator. Returns
+/// 1 when it holds them.
+BX_EXPORT int bx_Memory_Reserve( uint32_t bytes )
+{
+	return emscripten_resize_heap( (size_t)bytes ) ? 1 : 0;
+}

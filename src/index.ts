@@ -18,3 +18,4 @@ export {
 export { default as Box3D } from "babylon-box3d/wasm";
 export type { Box3DModule, Box3DModuleOptions, Box3DExports, Box3DHeap } from "babylon-box3d/wasm";
 export { CanUseBox3DThreads, LoadBox3D, type ILoadBox3DOptions } from "./loadBox3D.js";
+export { BOX3D_SNAPSHOT_CHUNK, RestoreBox3D, SnapshotBox3D, type IBox3DSnapshot } from "./box3dSnapshot.js";

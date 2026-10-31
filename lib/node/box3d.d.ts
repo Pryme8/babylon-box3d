@@ -396,6 +396,12 @@ export interface Box3DExports {
     ): number;
     /** A geometric mover moving at v pushes the dynamic body at the world point along the normal into it. Returns the impulse. */
     _bx_Body_PushFromMover(body: number, px: number, py: number, pz: number, nx: number, ny: number, nz: number, vx: number, vy: number, vz: number): number;
+    /** The break: the module's whole state lies in its memory's bytes [0, this), see `SnapshotBox3D`. Unsigned. */
+    _bx_Memory_End(): number;
+    /** Where the heap begins, past the static data and the stack, which a snapshot's build must match. Unsigned. */
+    _bx_Memory_Base(): number;
+    /** Grows the memory to hold `bytes` without the allocator; 1 when it holds them. */
+    _bx_Memory_Reserve(bytes: number): number;
 }
 
 export type Box3DModule = Box3DExports & Box3DHeap;

@@ -208,6 +208,42 @@ field and a road mesh, at 480 and 240 Hz), with the two builds taking turns of 1
 filtered against each other and the car unswept. Case by case the difference ran from 17% less to 17% more, on a
 machine half busy with other work, and the median case took 6.6% and 8.5% longer.
 
+## Snapshots
+
+A single threaded module's whole state, every world in it with its bodies, shapes, joints, contacts and their warm
+starts, the shim's slots and the allocator's books, lies in its memory below the break. `SnapshotBox3D` copies those
+bytes between steps, and `RestoreBox3D` writes them back, so every world steps on from there as it did after the
+snapshot, bit for bit, and every slot means what it meant then:
+
+```ts
+import { RestoreBox3D, SnapshotBox3D } from "babylon-box3d";
+
+const box3d = await LoadBox3D({ doublePrecision: true });
+// ... a world made and stepped through the raw exports
+const keyframe = SnapshotBox3D(box3d);
+// ... more steps, bodies made and destroyed
+RestoreBox3D(box3d, keyframe); // back to the keyframe: the bodies made since are gone
+```
+
+A snapshot is cut into 16 KiB pieces, and one taken after another (`SnapshotBox3D(box3d, previous)`) shares the
+pieces that did not change, so a run of snapshots costs what moved between them rather than the module's size each
+time. It can be written back into the module it came from, or into a fresh instance of the same build, which grows to
+hold it (`bx_Memory_Reserve`); a module of another build or precision, whose memory is laid out otherwise, is refused
+(`bx_Memory_Base`, where its heap begins). What a restore leaves alone is everything outside the module: a
+`Box3DPlugin`'s bodies and shapes are JavaScript objects over the module's slots and are not moved back, so snapshots
+are for code that drives the module through its raw exports and keeps its own state beside it. The clock is outside
+it too: a world whose timer is on, as it is by default, keeps its last step's timings, which a step after a restore
+reads afresh, so its steps repeat to the bit while those bytes do not; with `bx_World_EnableTimer(world, 0)` the
+memory after the same steps is the same to the byte. The threaded builds refuse snapshots, since their workers'
+stacks, semaphore and task ring lie in the same memory; load the single threaded build for a world to be restored,
+which steps it to the same bits (`test/threads.test.ts`). `bx_Memory_End()` reads the break.
+
+What it covers (`test/wasm.snapshot.test.ts`, on both precisions): a pile of tumbling multi-box bodies restored after
+480 steps repeats them to the bit and leaves the module's memory as the first run did, to the byte, also after 3,000
+bodies were made and half destroyed, a world made and the memory grown since; snapshots restored back and forth in
+turn; a fresh instance, grown to take a 44 MB snapshot, steps as the module it was taken of did; and a snapshot of
+another layout or precision is refused.
+
 ## What is covered
 
 | Babylon v2 | Box3D |
