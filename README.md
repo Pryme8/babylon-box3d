@@ -216,7 +216,7 @@ bytes between steps, and `RestoreBox3D` writes them back, so every world steps o
 snapshot, bit for bit, and every slot means what it meant then:
 
 ```ts
-import { RestoreBox3D, SnapshotBox3D } from "babylon-box3d";
+import { LoadBox3D, RestoreBox3D, SnapshotBox3D } from "babylon-box3d";
 
 const box3d = await LoadBox3D({ doublePrecision: true });
 // ... a world made and stepped through the raw exports
