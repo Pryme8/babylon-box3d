@@ -1,0 +1,99 @@
+diff --git a/include/box3d/box3d.h b/include/box3d/box3d.h
+index 3c33aa2..f1287a2 100644
+--- a/include/box3d/box3d.h
++++ b/include/box3d/box3d.h
+@@ -790,11 +790,12 @@ B3_API float b3Body_GetAabbMargin( b3BodyId bodyId );
+ /// Sweep this dynamic body against sweep targets alone (b3Body_SetSweepTarget), in place of its continuous collision
+ /// against static bodies, whether that is enabled or not. Off by default. When it moves fast enough for continuous
+ /// collision, and the world's is enabled, it is swept once the broad-phase is refit, as a bullet is, from the pose it
+-/// began the step in to the one it ends it in, against the kinematic and dynamic targets near it. With no target near
+-/// it nothing changes: its bounds and contacts are those of a body that is not swept. A hit puts it back to the time
+-/// of impact, as continuous collision does, keeping its velocity. For a body that must not pass through thin shapes
+-/// that move, such as a car meeting posts that yield, where sweeping it against everything would cost too much or
+-/// catch it on the ground it rolls over.
++/// began the step in to the one it ends it in, against the kinematic and dynamic targets near it that do not touch it
++/// yet. With none, nothing changes: its bounds and contacts are those of a body that is not swept. A hit puts it back to
++/// the time of impact, as continuous collision does, keeping its velocity, and from their first touch the two are left
++/// to their contacts, crushing or not. For a body that must not pass through thin shapes that move, such as a car
++/// meeting posts that yield, where sweeping it against everything would cost too much or catch it on the ground it
++/// rolls over.
+ B3_API void b3Body_SetSweepTargetsOnly( b3BodyId bodyId, bool flag );
+ 
+ /// Is this body swept against sweep targets alone?
+diff --git a/src/solver.c b/src/solver.c
+index d96ba2c..1e211e0 100644
+--- a/src/solver.c
++++ b/src/solver.c
+@@ -379,6 +379,24 @@ static int b3CompareContinuousCandidates( const void* a, const void* b )
+ 	return ( ca->shapeId > cb->shapeId ) - ( ca->shapeId < cb->shapeId );
+ }
+ 
++// Whether a sweep target touches the swept body anywhere. From the first touch their contacts carry the two, crushing
++// or not: swept again, a target the body rides along or presses into would put the whole body back each step.
++static bool b3TargetTouches( b3World* world, const b3Body* target, int bodyId )
++{
++	int contactKey = target->headContactKey;
++	while ( contactKey != B3_NULL_INDEX )
++	{
++		int edgeIndex = contactKey & 1;
++		b3Contact* contact = b3Array_Get( world->contacts, contactKey >> 1 );
++		contactKey = contact->edges[edgeIndex].nextKey;
++		if ( contact->edges[edgeIndex ^ 1].bodyId == bodyId && ( contact->flags & b3_contactTouchingFlag ) )
++		{
++			return true;
++		}
++	}
++	return false;
++}
++
+ // This is called from b3DynamicTree_Query for continuous collision
+ static bool b3ContinuousQueryCallback( int proxyId, uint64_t userData, void* context )
+ {
+@@ -423,10 +441,12 @@ static bool b3ContinuousQueryCallback( int proxyId, uint64_t userData, void* con
+ 
+ 	b3Body* body = b3Array_Get( world->bodies, shape->bodyId );
+ 
+-	// A body swept against sweep targets alone sees nothing else, nor a target swept against targets itself
++	// A body swept against sweep targets alone sees nothing else, nor a target swept against targets itself, nor one it
++	// touches already
+ 	if ( fastBodySim->flags & b3_sweepTargetsOnly )
+ 	{
+-		if ( ( body->flags & b3_isSweepTarget ) == 0 || ( body->flags & b3_sweepTargetsOnly ) != 0 )
++		if ( ( body->flags & b3_isSweepTarget ) == 0 || ( body->flags & b3_sweepTargetsOnly ) != 0 ||
++			 b3TargetTouches( world, body, fastBodySim->bodyId ) )
+ 		{
+ 			return true;
+ 		}
+@@ -785,10 +805,12 @@ static void b3SolveContinuous( b3World* world, int bodySimIndex, b3TaskContext*
+ typedef struct b3SweepTargetNear
+ {
+ 	b3World* world;
++	int bodyId;
+ 	bool found;
+ } b3SweepTargetNear;
+ 
+-// Stops the query at the first shape of a body that a body swept against sweep targets alone sees
++// Stops the query at the first shape of a target that a body swept against sweep targets alone sees, one that is not
++// a bullet, nor swept against targets itself, nor touching it already
+ static bool b3SweepTargetNearCallback( int proxyId, uint64_t userData, void* context )
+ {
+ 	B3_UNUSED( proxyId );
+@@ -796,7 +818,8 @@ static bool b3SweepTargetNearCallback( int proxyId, uint64_t userData, void* con
+ 	b3SweepTargetNear* near = context;
+ 	b3Shape* shape = b3Array_Get( near->world->shapes, (int)userData );
+ 	b3Body* body = b3Array_Get( near->world->bodies, shape->bodyId );
+-	if ( ( body->flags & b3_isSweepTarget ) == 0 || ( body->flags & ( b3_isBullet | b3_sweepTargetsOnly ) ) != 0 )
++	if ( ( body->flags & b3_isSweepTarget ) == 0 || ( body->flags & ( b3_isBullet | b3_sweepTargetsOnly ) ) != 0 ||
++		 b3TargetTouches( near->world, body, near->bodyId ) )
+ 	{
+ 		return true;
+ 	}
+@@ -830,7 +853,7 @@ static void b3SolveSweepTargets( b3World* world, int bodySimIndex, b3TaskContext
+ 	b3AABB box1 = { b3Sub( sweep.c1, extent ), b3Add( sweep.c1, extent ) };
+ 	b3AABB box2 = { b3Sub( sweep.c2, extent ), b3Add( sweep.c2, extent ) };
+ 	b3AABB nearBox = b3OffsetAABB( b3AABB_Union( box1, box2 ), base );
+-	b3SweepTargetNear near = { world, false };
++	b3SweepTargetNear near = { world, fastBodySim->bodyId, false };
+ 	b3DynamicTree_Query( dynamicTree, nearBox, B3_DEFAULT_MASK_BITS, false, b3SweepTargetNearCallback, &near );
+ 	if ( near.found == false )
+ 	{

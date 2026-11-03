@@ -1,14 +1,17 @@
-// Sweeps against sweep targets alone (wasm/patches/0009, shim: bx_Body_SetSweepTargetsOnly and bx_Body_SetSweepTarget),
+// Sweeps against sweep targets alone (wasm/patches/0009 and 0010, shim: bx_Body_SetSweepTargetsOnly and
+// bx_Body_SetSweepTarget),
 // against the real wasm through the shim's raw exports. A body that moves further in a step than its speculative reach
 // passes through a thin body that is not static: continuous collision sweeps a body against static shapes alone, and
 // a bullet against everything. A body swept against targets alone is swept once the broad phase is refit against the
-// kinematic and dynamic bodies marked as targets, and nothing else. It stops at a target it meets, and with no target
-// near, or one beside its path, it steps as it would unswept, bit for bit.
+// kinematic and dynamic bodies marked as targets, and nothing else, until a target touches it. It stops at a target it
+// meets; with no target near, or one beside its path, or one it touches already, it steps as it would unswept, bit for
+// bit.
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { LoadBox3D } from "./wasmScene";
 
 const STATIC = 0;
+const KINEMATIC = 1;
 const DYNAMIC = 2;
 const HZ = 480;
 const DT = 1 / HZ;
@@ -199,6 +202,48 @@ describe("a sweep against sweep targets", () => {
         const unswept = slide(false);
         const swept = slide(true);
         expect(unswept.past).toBe(true);
+        for (let i = 0; i < swept.poses.length; i++) {
+            expect(swept.poses[i]).toEqual(unswept.poses[i]);
+        }
+    });
+    it("leaves a target it touches to their contact: a plate crushing into it steps as unswept, bit for bit", () => {
+        // A crushable plate, 5 mm short of a heavy block at the start, presses into it at 10 m/s, and the plate behind it
+        // comes up to the block through it, 2 cm a step. The block touches the body from the first step, so their
+        // contacts carry the two, the crush included: swept against the block still, the body would be put back each
+        // step the plate behind it came nearer.
+        const press = (swept: boolean) => {
+            const world = createWorld(0);
+            const block = b3._bx_CreateBody(world, DYNAMIC, 0.5, 0, 0, 0, 0, 0, 1, 1);
+            b3._bx_Body_SetShape(block, box(0.5, 0.5, 0.5, 8000));
+            b3._bx_Body_ApplyMassFromShapes(block);
+            b3._bx_Body_EnableSleep(block, 0);
+            b3._bx_Body_SetSweepTarget(block, 1);
+            const container = b3._bx_ShapeDesc_CreateContainer();
+            b3._bx_ShapeDesc_AddChild(container, box(0.01, 0.1, 0.1, 2000), 0, 0, 0, 0, 0, 0, 1, 1, 1, 1);
+            b3._bx_ShapeDesc_AddChild(container, box(0.01, 0.1, 0.1, 2000), -0.045, 0, 0, 0, 0, 0, 1, 1, 1, 1);
+            const body = b3._bx_CreateBody(world, DYNAMIC, -0.015, 0, 0, 0, 0, 0, 1, 1);
+            b3._bx_Body_SetShape(body, container);
+            b3._bx_Body_ApplyMassFromShapes(body);
+            b3._bx_Body_EnableSleep(body, 0);
+            b3._bx_Body_EnableContinuous(body, 0);
+            b3._bx_Body_SetEventFlags(body, 1, 0);
+            b3._bx_Body_SetShapeCrush(body, 0, 300, 1);
+            b3._bx_Body_SetLinearVelocity(body, 10, 0, 0);
+            b3._bx_Body_SetSweepTargetsOnly(body, swept ? 1 : 0);
+            let touched = false;
+            const poses: number[][] = [];
+            for (let i = 0; i < 96; i++) {
+                b3._bx_World_Step(world, DT, SUB_STEPS);
+                touched ||= began(world, body, block);
+                poses.push(pose(body));
+            }
+            return { poses, touched, x: x(body) };
+        };
+        const unswept = press(false);
+        const swept = press(true);
+        // the front plate crushed in far enough for the one behind it to meet the block
+        expect(unswept.touched).toBe(true);
+        expect(unswept.x).toBeGreaterThan(0.03);
         for (let i = 0; i < swept.poses.length; i++) {
             expect(swept.poses[i]).toEqual(unswept.poses[i]);
         }
