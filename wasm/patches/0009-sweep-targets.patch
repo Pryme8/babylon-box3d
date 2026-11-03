@@ -1,0 +1,395 @@
+diff --git a/include/box3d/box3d.h b/include/box3d/box3d.h
+index 39d4aa5..3c33aa2 100644
+--- a/include/box3d/box3d.h
++++ b/include/box3d/box3d.h
+@@ -787,6 +787,26 @@ B3_API void b3Body_SetAabbMargin( b3BodyId bodyId, float margin );
+ /// The fat AABB margin this body gives its shapes, or zero for each shape's own.
+ B3_API float b3Body_GetAabbMargin( b3BodyId bodyId );
+ 
++/// Sweep this dynamic body against sweep targets alone (b3Body_SetSweepTarget), in place of its continuous collision
++/// against static bodies, whether that is enabled or not. Off by default. When it moves fast enough for continuous
++/// collision, and the world's is enabled, it is swept once the broad-phase is refit, as a bullet is, from the pose it
++/// began the step in to the one it ends it in, against the kinematic and dynamic targets near it. With no target near
++/// it nothing changes: its bounds and contacts are those of a body that is not swept. A hit puts it back to the time
++/// of impact, as continuous collision does, keeping its velocity. For a body that must not pass through thin shapes
++/// that move, such as a car meeting posts that yield, where sweeping it against everything would cost too much or
++/// catch it on the ground it rolls over.
++B3_API void b3Body_SetSweepTargetsOnly( b3BodyId bodyId, bool flag );
++
++/// Is this body swept against sweep targets alone?
++B3_API bool b3Body_IsSweepTargetsOnly( b3BodyId bodyId );
++
++/// Make this body a target of the bodies swept against sweep targets alone (b3Body_SetSweepTargetsOnly). Off by
++/// default. Only a kinematic or dynamic target is seen, never a bullet or a body swept against targets itself.
++B3_API void b3Body_SetSweepTarget( b3BodyId bodyId, bool flag );
++
++/// Is this body a sweep target?
++B3_API bool b3Body_IsSweepTarget( b3BodyId bodyId );
++
+ /// Allow this body to rotate fast. Useful for axially symmetric bodies, such as vehicle wheels.
+ /// Normally rotation speed is clamped to improve CCD. However, this clamping is unnecessary for
+ /// bodies that only rotate fast around an axis of symmetry.
+diff --git a/src/body.c b/src/body.c
+index 04f6e8c..32f8738 100644
+--- a/src/body.c
++++ b/src/body.c
+@@ -2555,6 +2555,66 @@ bool b3Body_IsContinuousEnabled( b3BodyId bodyId )
+ 	return ( body->flags & b3_disableContinuous ) == 0;
+ }
+ 
++void b3Body_SetSweepTargetsOnly( b3BodyId bodyId, bool flag )
++{
++	b3World* world = b3GetUnlockedWorld( bodyId.world0 );
++	if ( world == NULL )
++	{
++		return;
++	}
++
++	B3_REC( world, BodySetSweepTargetsOnly, bodyId, flag );
++
++	b3Body* body = b3GetBodyFullId( world, bodyId );
++	if ( flag )
++	{
++		body->flags |= b3_sweepTargetsOnly;
++	}
++	else
++	{
++		body->flags &= ~b3_sweepTargetsOnly;
++	}
++
++	b3SyncBodyFlags( world, body );
++}
++
++bool b3Body_IsSweepTargetsOnly( b3BodyId bodyId )
++{
++	b3World* world = b3GetWorld( bodyId.world0 );
++	b3Body* body = b3GetBodyFullId( world, bodyId );
++	return ( body->flags & b3_sweepTargetsOnly ) != 0;
++}
++
++void b3Body_SetSweepTarget( b3BodyId bodyId, bool flag )
++{
++	b3World* world = b3GetUnlockedWorld( bodyId.world0 );
++	if ( world == NULL )
++	{
++		return;
++	}
++
++	B3_REC( world, BodySetSweepTarget, bodyId, flag );
++
++	b3Body* body = b3GetBodyFullId( world, bodyId );
++	if ( flag )
++	{
++		body->flags |= b3_isSweepTarget;
++	}
++	else
++	{
++		body->flags &= ~b3_isSweepTarget;
++	}
++
++	b3SyncBodyFlags( world, body );
++}
++
++bool b3Body_IsSweepTarget( b3BodyId bodyId )
++{
++	b3World* world = b3GetWorld( bodyId.world0 );
++	b3Body* body = b3GetBodyFullId( world, bodyId );
++	return ( body->flags & b3_isSweepTarget ) != 0;
++}
++
+ void b3Body_AllowFastRotation( b3BodyId bodyId, bool flag )
+ {
+ 	b3World* world = b3GetUnlockedWorld( bodyId.world0 );
+diff --git a/src/body.h b/src/body.h
+index f08e63e..b8bb8cb 100644
+--- a/src/body.h
++++ b/src/body.h
+@@ -69,6 +69,12 @@ enum b3BodyFlags
+ 	// Continuous collision is off for this body.
+ 	b3_disableContinuous = 0x00020000,
+ 
++	// This dynamic body is swept against sweep targets alone, in place of its continuous collision
++	b3_sweepTargetsOnly = 0x00040000,
++
++	// Bodies swept against sweep targets alone see this body
++	b3_isSweepTarget = 0x00080000,
++
+ 	// All lock flags
+ 	b3_allLocks = b3_lockLinearX | b3_lockLinearY | b3_lockLinearZ | b3_lockAngularX | b3_lockAngularY | b3_lockAngularZ,
+ 
+diff --git a/src/recording_ops.inl b/src/recording_ops.inl
+index 7349c83..73adf1b 100644
+--- a/src/recording_ops.inl
++++ b/src/recording_ops.inl
+@@ -76,6 +76,8 @@ B3_REC_OP( 0x3A, BodyAllowFastRotation, RET_NONE, ARG( BODYID, body ) ARG( BOOL,
+ B3_REC_OP( 0x3B, BodySetSafetyFactor, RET_NONE, ARG( BODYID, body ) ARG( F32, value ) )
+ B3_REC_OP( 0x3C, BodyEnableContinuous, RET_NONE, ARG( BODYID, body ) ARG( BOOL, flag ) )
+ B3_REC_OP( 0x3D, BodySetAabbMargin, RET_NONE, ARG( BODYID, body ) ARG( F32, margin ) )
++B3_REC_OP( 0x3E, BodySetSweepTargetsOnly, RET_NONE, ARG( BODYID, body ) ARG( BOOL, flag ) )
++B3_REC_OP( 0x3F, BodySetSweepTarget, RET_NONE, ARG( BODYID, body ) ARG( BOOL, flag ) )
+ 
+ // Shape create/destroy
+ B3_REC_OP( 0x40, CreateSphereShape, RET_SHAPEID, ARG( BODYID, body ) ARG( SHAPEDEF, def ) ARG( SPHERE, sphere ) )
+diff --git a/src/replay.c b/src/replay.c
+index fd4dde6..b97ed9b 100644
+--- a/src/replay.c
++++ b/src/replay.c
+@@ -997,6 +997,16 @@ static void b3RecDispatch_BodySetAabbMargin( const b3RecArgs_BodySetAabbMargin*
+ 	b3Body_SetAabbMargin( b3RecMakeBodyId( rdr, a->body ), a->margin );
+ }
+ 
++static void b3RecDispatch_BodySetSweepTargetsOnly( const b3RecArgs_BodySetSweepTargetsOnly* a, b3RecReader* rdr )
++{
++	b3Body_SetSweepTargetsOnly( b3RecMakeBodyId( rdr, a->body ), a->flag );
++}
++
++static void b3RecDispatch_BodySetSweepTarget( const b3RecArgs_BodySetSweepTarget* a, b3RecReader* rdr )
++{
++	b3Body_SetSweepTarget( b3RecMakeBodyId( rdr, a->body ), a->flag );
++}
++
+ static void b3RecDispatch_BodyEnableContactRecycling( const b3RecArgs_BodyEnableContactRecycling* a, b3RecReader* rdr )
+ {
+ 	b3Body_EnableContactRecycling( b3RecMakeBodyId( rdr, a->body ), a->flag );
+diff --git a/src/solver.c b/src/solver.c
+index 3e82372..d96ba2c 100644
+--- a/src/solver.c
++++ b/src/solver.c
+@@ -422,7 +422,19 @@ static bool b3ContinuousQueryCallback( int proxyId, uint64_t userData, void* con
+ 	}
+ 
+ 	b3Body* body = b3Array_Get( world->bodies, shape->bodyId );
+-	B3_ASSERT( body->type == b3_staticBody || ( fastBodySim->flags & b3_isBullet ) );
++
++	// A body swept against sweep targets alone sees nothing else, nor a target swept against targets itself
++	if ( fastBodySim->flags & b3_sweepTargetsOnly )
++	{
++		if ( ( body->flags & b3_isSweepTarget ) == 0 || ( body->flags & b3_sweepTargetsOnly ) != 0 )
++		{
++			return true;
++		}
++	}
++	else
++	{
++		B3_ASSERT( body->type == b3_staticBody || ( fastBodySim->flags & b3_isBullet ) );
++	}
+ 
+ 	// Skip bullets
+ 	if ( body->flags & b3_isBullet )
+@@ -770,6 +782,182 @@ static void b3SolveContinuous( b3World* world, int bodySimIndex, b3TaskContext*
+ 	b3TracyCZoneEnd( ccd );
+ }
+ 
++typedef struct b3SweepTargetNear
++{
++	b3World* world;
++	bool found;
++} b3SweepTargetNear;
++
++// Stops the query at the first shape of a body that a body swept against sweep targets alone sees
++static bool b3SweepTargetNearCallback( int proxyId, uint64_t userData, void* context )
++{
++	B3_UNUSED( proxyId );
++
++	b3SweepTargetNear* near = context;
++	b3Shape* shape = b3Array_Get( near->world->shapes, (int)userData );
++	b3Body* body = b3Array_Get( near->world->bodies, shape->bodyId );
++	if ( ( body->flags & b3_isSweepTarget ) == 0 || ( body->flags & ( b3_isBullet | b3_sweepTargetsOnly ) ) != 0 )
++	{
++		return true;
++	}
++
++	near->found = true;
++	return false;
++}
++
++// Continuous collision of a body swept against sweep targets alone (b3Body_SetSweepTargetsOnly), once the broad-phase is
++// refit. Finalize left the sweep's start where the step began and gave the body's shapes the bounds of a body that is not
++// fast, so with no hit the body only advances its sweep; a hit puts it back to the time of impact as b3SolveContinuous
++// does, and its shapes take their bounds there.
++static void b3SolveSweepTargets( b3World* world, int bodySimIndex, b3TaskContext* taskContext, float dt )
++{
++	b3TracyCZoneNC( sweep_targets, "Sweep Targets", b3_colorDarkGoldenRod, true );
++
++	b3SolverSet* awakeSet = b3Array_Get( world->solverSets, b3_awakeSet );
++	b3BodySim* fastBodySim = b3Array_Get( awakeSet->bodySims, bodySimIndex );
++	b3Body* fastBody = b3Array_Get( world->bodies, fastBodySim->bodyId );
++
++	b3Pos base = fastBodySim->center0;
++	b3Sweep sweep = b3MakeRelativeSweep( fastBodySim, base );
++
++	b3DynamicTree* kinematicTree = world->broadPhase.trees + b3_kinematicBody;
++	b3DynamicTree* dynamicTree = world->broadPhase.trees + b3_dynamicBody;
++
++	// Every shape lies within the body's farthest extent of its centre, so a box round both ends of the centre's path
++	// holds every shape's sweep. Most steps no target lies in it, and no shape is swept.
++	float reach = b3Length( fastBodySim->maxExtent );
++	b3Vec3 extent = { reach, reach, reach };
++	b3AABB box1 = { b3Sub( sweep.c1, extent ), b3Add( sweep.c1, extent ) };
++	b3AABB box2 = { b3Sub( sweep.c2, extent ), b3Add( sweep.c2, extent ) };
++	b3AABB nearBox = b3OffsetAABB( b3AABB_Union( box1, box2 ), base );
++	b3SweepTargetNear near = { world, false };
++	b3DynamicTree_Query( dynamicTree, nearBox, B3_DEFAULT_MASK_BITS, false, b3SweepTargetNearCallback, &near );
++	if ( near.found == false )
++	{
++		b3DynamicTree_Query( kinematicTree, nearBox, B3_DEFAULT_MASK_BITS, false, b3SweepTargetNearCallback, &near );
++	}
++
++	if ( near.found == false )
++	{
++		fastBodySim->rotation0 = fastBodySim->transform.q;
++		fastBodySim->center0 = fastBodySim->center;
++		b3TracyCZoneEnd( sweep_targets );
++		return;
++	}
++
++	b3Transform xf1;
++	xf1.q = sweep.q1;
++	xf1.p = b3Sub( sweep.c1, b3RotateVector( sweep.q1, sweep.localCenter ) );
++
++	b3Transform xf2;
++	xf2.q = sweep.q2;
++	xf2.p = b3Sub( sweep.c2, b3RotateVector( sweep.q2, sweep.localCenter ) );
++
++	b3ContinuousContext context = { 0 };
++	context.world = world;
++	context.sweep = sweep;
++	context.base = base;
++	context.fastBodySim = fastBodySim;
++	context.fraction = 1.0f;
++	context.candidates = context.localCandidates;
++	context.candidateCapacity = B3_CONTINUOUS_LOCAL_CANDIDATES;
++
++	// Every solid shape is swept however far it moves, since what is thin is the target
++	int shapeId = fastBody->headShapeId;
++	while ( shapeId != B3_NULL_INDEX )
++	{
++		b3Shape* fastShape = b3Array_Get( world->shapes, shapeId );
++		shapeId = fastShape->nextShapeId;
++
++		if ( fastShape->type == b3_meshShape || fastShape->type == b3_heightShape || fastShape->sensorIndex != B3_NULL_INDEX )
++		{
++			continue;
++		}
++
++		context.fastShape = fastShape;
++		context.centroid1 = b3TransformPoint( xf1, fastShape->localCentroid );
++		context.centroid2 = b3TransformPoint( xf2, fastShape->localCentroid );
++
++		b3AABB sweptBox =
++			b3OffsetAABB( b3AABB_Union( b3ComputeShapeAABB( fastShape, xf1 ), b3ComputeShapeAABB( fastShape, xf2 ) ), base );
++		b3DynamicTree_Query( kinematicTree, sweptBox, B3_DEFAULT_MASK_BITS, false, b3ContinuousQueryCallback, &context );
++		b3DynamicTree_Query( dynamicTree, sweptBox, B3_DEFAULT_MASK_BITS, false, b3ContinuousQueryCallback, &context );
++		b3SweepContinuousCandidates( &context );
++	}
++
++	if ( context.candidates != context.localCandidates )
++	{
++		b3Free( context.candidates, context.candidateCapacity * sizeof( b3ContinuousCandidate ) );
++	}
++
++	if ( context.fraction < 1.0f )
++	{
++		// The sweep is relative to the base, so re-add the base to return the advanced pose to world space
++		b3Quat q = b3NLerp( sweep.q1, sweep.q2, context.fraction );
++		b3Vec3 c = b3Lerp( sweep.c1, sweep.c2, context.fraction );
++		b3Vec3 origin = b3Sub( c, b3RotateVector( q, sweep.localCenter ) );
++
++		b3WorldTransform transform = { b3OffsetPos( base, origin ), q };
++		b3Pos center = b3OffsetPos( base, c );
++		fastBodySim->transform = transform;
++		fastBodySim->center = center;
++		fastBodySim->rotation0 = q;
++		fastBodySim->center0 = center;
++		fastBodySim->flags |= b3_hadTimeOfImpact;
++
++		// The time lost loses gravity's share of it, as in b3SolveContinuous
++		b3BodyState* fastBodyState = b3Array_Get( awakeSet->bodyStates, bodySimIndex );
++		float timeLoss = ( 1.0f - context.fraction ) * dt;
++		b3Vec3 dv = b3MulSV( -timeLoss * fastBodySim->gravityScale, world->gravity );
++		dv.x = ( fastBodyState->flags & b3_lockLinearX ) ? 0.0f : dv.x;
++		dv.y = ( fastBodyState->flags & b3_lockLinearY ) ? 0.0f : dv.y;
++		dv.z = ( fastBodyState->flags & b3_lockLinearZ ) ? 0.0f : dv.z;
++		fastBodyState->linearVelocity = b3Add( fastBodyState->linearVelocity, dv );
++
++		b3BodyMoveEvent* event = b3Array_Get( world->bodyMoveEvents, bodySimIndex );
++		event->transform = transform;
++
++		// Finalize bounded the shapes where the step ended. They are bounded again where the body stopped, and their
++		// proxies grow after the sweeps, serially, as a bullet's do.
++		shapeId = fastBody->headShapeId;
++		while ( shapeId != B3_NULL_INDEX )
++		{
++			b3Shape* shape = b3Array_Get( world->shapes, shapeId );
++
++			b3AABB aabb = b3ComputeFatShapeAABB( shape, transform, B3_SPECULATIVE_DISTANCE );
++			shape->aabb = aabb;
++
++			b3AABB* shapeFatAABB = world->fatAABBs.data + shapeId;
++			if ( b3AABB_Contains( *shapeFatAABB, aabb ) == false )
++			{
++				*shapeFatAABB = b3AABB_Inflate( aabb, shape->aabbMargin );
++				fastBodySim->flags |= b3_enlargeBulletBounds;
++			}
++
++			shapeId = shape->nextShapeId;
++		}
++	}
++	else
++	{
++		fastBodySim->rotation0 = fastBodySim->transform.q;
++		fastBodySim->center0 = fastBodySim->center;
++	}
++
++	for ( int i = 0; i < context.sensorCount; ++i )
++	{
++		if ( context.sensorFractions[i] < context.fraction )
++		{
++			b3Array_Push( taskContext->sensorHits, context.sensorHits[i] );
++		}
++	}
++
++	taskContext->distanceIterations = b3MaxInt( taskContext->distanceIterations, context.distanceIterations );
++	taskContext->pushBackIterations = b3MaxInt( taskContext->pushBackIterations, context.pushBackIterations );
++	taskContext->rootIterations = b3MaxInt( taskContext->rootIterations, context.rootIterations );
++
++	b3TracyCZoneEnd( sweep_targets );
++}
++
+ // Implements b3ParallelForCallback
+ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex, void* context )
+ {
+@@ -873,8 +1061,15 @@ static void b3FinalizeBodiesTask( int startIndex, int endIndex, int workerIndex,
+ 
+ 			float safetyFactor = body->safetyFactor;
+ 			float maxMotion = b3MaxFloat( maxDeltaPosition, maxVelocity * timeStep );
+-			if ( body->type == b3_dynamicBody && enableContinuous && ( body->flags & b3_disableContinuous ) == 0 &&
+-				 maxMotion > safetyFactor * sim->minExtent )
++			bool canTunnel = body->type == b3_dynamicBody && enableContinuous && maxMotion > safetyFactor * sim->minExtent;
++			if ( canTunnel && ( body->flags & b3_sweepTargetsOnly ) )
++			{
++				// Swept against the sweep targets once the broad-phase is refit, from the pose it began the step in
++				// (b3SolveSweepTargets). It is not fast: its bounds are updated below and its contacts recycle.
++				int bulletIndex = b3AtomicFetchAddInt( &stepContext->bulletBodyCount, 1 );
++				stepContext->bulletBodies[bulletIndex] = simIndex;
++			}
++			else if ( canTunnel && ( body->flags & b3_disableContinuous ) == 0 )
+ 			{
+ 				// This flag is used for debug draw and contact recycling.
+ 				sim->flags |= b3_isFast;
+@@ -1525,7 +1720,14 @@ static void b3BulletBodyTask( int startIndex, int endIndex, int workerIndex, voi
+ 	for ( int i = startIndex; i < endIndex; ++i )
+ 	{
+ 		int simIndex = stepContext->bulletBodies[i];
+-		b3SolveContinuous( stepContext->world, simIndex, taskContext, stepContext->dt );
++		if ( stepContext->sims[simIndex].flags & b3_sweepTargetsOnly )
++		{
++			b3SolveSweepTargets( stepContext->world, simIndex, taskContext, stepContext->dt );
++		}
++		else
++		{
++			b3SolveContinuous( stepContext->world, simIndex, taskContext, stepContext->dt );
++		}
+ 	}
+ 
+ 	b3TracyCZoneEnd( bullet_body_task );

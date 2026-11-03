@@ -1539,6 +1539,34 @@ BX_EXPORT int bx_Body_IsContinuousEnabled( int slot )
 	return b3Body_IsContinuousEnabled( body->id ) ? 1 : 0;
 }
 
+// A body swept against sweep targets alone (wasm/patches/0009), after the broad phase is refit, in place of its
+// continuous collision: a car that must not pass through the thin posts that yield before it, at a fraction of what
+// sweeping it against everything costs. With no target near it the body steps as if it were not swept.
+BX_EXPORT void bx_Body_SetSweepTargetsOnly( int slot, int flag )
+{
+	BX_BODY( slot );
+	b3Body_SetSweepTargetsOnly( body->id, flag != 0 );
+}
+
+BX_EXPORT int bx_Body_IsSweepTargetsOnly( int slot )
+{
+	BX_BODY_RET( slot, 0 );
+	return b3Body_IsSweepTargetsOnly( body->id ) ? 1 : 0;
+}
+
+// A kinematic or dynamic body that the bodies swept against sweep targets alone see (wasm/patches/0009)
+BX_EXPORT void bx_Body_SetSweepTarget( int slot, int flag )
+{
+	BX_BODY( slot );
+	b3Body_SetSweepTarget( body->id, flag != 0 );
+}
+
+BX_EXPORT int bx_Body_IsSweepTarget( int slot )
+{
+	BX_BODY_RET( slot, 0 );
+	return b3Body_IsSweepTarget( body->id ) ? 1 : 0;
+}
+
 // The fat AABB margin of the body's shapes (wasm/patches/0008), m: how far each may move past its bounds before the
 // broad phase moves its proxy. Zero, the default, leaves each shape its own, an eighth of its extent up to 5 cm. A fast
 // body of many small shapes moves every proxy every step at the default; a wider margin moves them seldom, and finds
